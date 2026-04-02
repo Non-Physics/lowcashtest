@@ -12,13 +12,16 @@ import pandas as pd
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-STRATEGY_FILE = PROJECT_ROOT / "股票策略回测.py"
-OUTPUT_ROOT = PROJECT_ROOT / "outputs" / "股票策略参数优化_修正版夜跑版"
+STRATEGY_FILE = PROJECT_ROOT / "股票策略回测_基线版.py"
+OUTPUT_ROOT = PROJECT_ROOT / "outputs" / "股票策略参数优化_基线退出层第二阶段"
 LEADERBOARD_PATH = OUTPUT_ROOT / "参数排行榜.csv"
 PROGRESS_PATH = OUTPUT_ROOT / "参数排行榜_增量.csv"
 BEST_PARAMS_PATH = OUTPUT_ROOT / "最佳参数.json"
 BEST_SPLIT_SUMMARY_PATH = OUTPUT_ROOT / "最佳参数_时间切分汇总.json"
+BEST_PARAMS_RETURN_PATH = OUTPUT_ROOT / "最佳参数_收益优先.json"
+BEST_SPLIT_SUMMARY_RETURN_PATH = OUTPUT_ROOT / "最佳参数_收益优先_时间切分汇总.json"
 OPTIMIZE_WITH_INTRADAY_EXIT = False
+OPTIMIZE_STAGE_NAME = "baseline_exit_stage_2"
 
 TIME_SPLITS = [
     ("train_window", "2025-01-01", "2025-09-30"),
@@ -44,14 +47,14 @@ class StrategyParams:
 PARAM_GRID = {
     "top_n": [2],
     "max_position_pct": [0.20],
-    "min_ret20": [0.035, 0.04, 0.045, 0.05, 0.06],
-    "min_ma20_slope_pct": [0.006, 0.008, 0.01, 0.012],
-    "min_intraday_close_from_low_pct": [0.002, 0.004, 0.006, 0.008],
-    "early_weak_exit_check_day": [4, 5],
-    "early_weak_exit_min_close_ret": [-0.01],
-    "early_weak_exit_min_high_ret": [0.02],
-    "trailing_stop_atr_multiplier": [2.2],
-    "max_holding_days": [18, 20],
+    "min_ret20": [0.035],
+    "min_ma20_slope_pct": [0.006],
+    "min_intraday_close_from_low_pct": [0.002],
+    "early_weak_exit_check_day": [5, 6, 7],
+    "early_weak_exit_min_close_ret": [-0.0175, -0.015, -0.0125, -0.01],
+    "early_weak_exit_min_high_ret": [0.025, 0.03, 0.035],
+    "trailing_stop_atr_multiplier": [2.2, 2.35, 2.5],
+    "max_holding_days": [20],
 }
 
 
@@ -119,35 +122,65 @@ def score_run(metrics: dict) -> float:
     )
 
 
-def aggregate_score(split_metrics: dict[str, dict]) -> float:
+def aggregate_score_return(split_metrics: dict[str, dict]) -> float:
     train = split_metrics["train_window"]
     validation = split_metrics["validation_window"]
     test = split_metrics["test_window"]
 
     base = (
-        score_run(train) * 0.20
+        score_run(train) * 0.15
         + score_run(validation) * 0.35
-        + score_run(test) * 0.45
+        + score_run(test) * 0.50
     )
     penalty = 0.0
-
     for split_name, metrics in split_metrics.items():
         if metrics["return_pct"] < 0:
-            penalty += abs(metrics["return_pct"]) * 2.5
+            penalty += abs(metrics["return_pct"]) * 2.2
         if metrics["max_drawdown_pct"] < -12:
             penalty += abs(metrics["max_drawdown_pct"] + 12) * 1.8
         if metrics["sell_trade_count"] < 8:
             penalty += (8 - metrics["sell_trade_count"]) * 1.5
         if split_name in {"validation_window", "test_window"} and metrics["sharpe"] < 0.8:
             penalty += (0.8 - metrics["sharpe"]) * 12
-
     stability_penalty = abs(validation["return_pct"] - test["return_pct"]) * 0.6
     return base - penalty - stability_penalty
+
+
+def aggregate_score_balanced(split_metrics: dict[str, dict]) -> float:
+    train = split_metrics["train_window"]
+    validation = split_metrics["validation_window"]
+    test = split_metrics["test_window"]
+
+    base = (
+        score_run(train) * 0.35
+        + score_run(validation) * 0.30
+        + score_run(test) * 0.35
+    )
+    penalty = 0.0
+
+    for metrics in split_metrics.values():
+        if metrics["return_pct"] < 0:
+            penalty += abs(metrics["return_pct"]) * 3.2
+        if metrics["max_drawdown_pct"] < -10:
+            penalty += abs(metrics["max_drawdown_pct"] + 10) * 2.5
+        if metrics["sell_trade_count"] < 8:
+            penalty += (8 - metrics["sell_trade_count"]) * 1.6
+        if metrics["sharpe"] < 0.5:
+            penalty += (0.5 - metrics["sharpe"]) * 10
+
+    spread_penalty = (
+        abs(train["return_pct"] - validation["return_pct"]) * 0.8
+        + abs(validation["return_pct"] - test["return_pct"]) * 0.8
+        + abs(train["return_pct"] - test["return_pct"]) * 0.5
+    )
+    return base - penalty - spread_penalty
 
 
 def run_split(strategy, params: StrategyParams, split_name: str, start: str, end: str) -> dict:
     apply_params(strategy, params)
     strategy.ENABLE_INTRADAY_EXIT = OPTIMIZE_WITH_INTRADAY_EXIT
+    if hasattr(strategy, "STRICT_RISK_ON_FOR_ENTRY"):
+        strategy.STRICT_RISK_ON_FOR_ENTRY = True
     strategy.BACKTEST_START = start
     strategy.BACKTEST_END = end
     result = strategy.run_backtest(
@@ -167,6 +200,7 @@ def run_split(strategy, params: StrategyParams, split_name: str, start: str, end
     )
     metrics["reason_digest"] = digest_exit_reasons(result["sells_df"])
     metrics["split_name"] = split_name
+    metrics["optimize_stage_name"] = OPTIMIZE_STAGE_NAME
     return metrics
 
 
@@ -180,7 +214,7 @@ def param_slug(params: StrategyParams) -> str:
         f"_ewd{params.early_weak_exit_check_day}"
         f"_ecr{int(abs(params.early_weak_exit_min_close_ret) * 1000)}"
         f"_ehr{int(params.early_weak_exit_min_high_ret * 1000)}"
-        f"_trail{int(params.trailing_stop_atr_multiplier * 10)}"
+        f"_trail{int(params.trailing_stop_atr_multiplier * 100)}"
         f"_hold{params.max_holding_days}"
     )
 
@@ -209,18 +243,109 @@ def build_result_row(params: StrategyParams, split_metrics: dict[str, dict]) -> 
         row[f"{prefix}_trade_digest"] = metrics["trade_digest"]
         row[f"{prefix}_sell_digest"] = metrics["sell_digest"]
         row[f"{prefix}_reason_digest"] = metrics["reason_digest"]
-    row["objective_score"] = aggregate_score(split_metrics)
+    row["objective_score_balanced"] = aggregate_score_balanced(split_metrics)
+    row["objective_score_return"] = aggregate_score_return(split_metrics)
+    row["objective_score"] = row["objective_score_balanced"]
+    row["optimize_stage_name"] = OPTIMIZE_STAGE_NAME
     return row
 
 
 def persist_progress(rows: list[dict]) -> pd.DataFrame:
     leaderboard = pd.DataFrame(rows).sort_values(
-        by=["objective_score", "test_return_pct", "validation_return_pct", "test_sharpe"],
+        by=[
+            "objective_score_balanced",
+            "objective_score_return",
+            "test_return_pct",
+            "validation_return_pct",
+            "test_sharpe",
+        ],
         ascending=False,
     ).reset_index(drop=True)
     leaderboard.to_csv(PROGRESS_PATH, index=False, encoding="utf-8-sig")
     leaderboard.to_csv(LEADERBOARD_PATH, index=False, encoding="utf-8-sig")
     return leaderboard
+
+
+def row_to_params(row: dict) -> StrategyParams:
+    return StrategyParams(
+        top_n=int(row["top_n"]),
+        max_position_pct=float(row["max_position_pct"]),
+        min_ret20=float(row["min_ret20"]),
+        min_ma20_slope_pct=float(row["min_ma20_slope_pct"]),
+        min_intraday_close_from_low_pct=float(row["min_intraday_close_from_low_pct"]),
+        early_weak_exit_check_day=int(row["early_weak_exit_check_day"]),
+        early_weak_exit_min_close_ret=float(row["early_weak_exit_min_close_ret"]),
+        early_weak_exit_min_high_ret=float(row["early_weak_exit_min_high_ret"]),
+        trailing_stop_atr_multiplier=float(row["trailing_stop_atr_multiplier"]),
+        max_holding_days=int(row["max_holding_days"]),
+    )
+
+
+def run_best_bundle(
+    strategy,
+    params: StrategyParams,
+    preloaded_context: dict,
+    runs_root: Path,
+) -> tuple[list[dict], dict]:
+    split_metrics = []
+    for split_name, start, end in TIME_SPLITS:
+        apply_params(strategy, params)
+        strategy.BACKTEST_START = start
+        strategy.BACKTEST_END = end
+        strategy.OUTPUT_DIR = runs_root / split_name
+        strategy.ENABLE_INTRADAY_EXIT = OPTIMIZE_WITH_INTRADAY_EXIT
+        if hasattr(strategy, "STRICT_RISK_ON_FOR_ENTRY"):
+            strategy.STRICT_RISK_ON_FOR_ENTRY = True
+        result = strategy.run_backtest(
+            verbose=False,
+            export_outputs=True,
+            preloaded_context=preloaded_context,
+        )
+        metrics = dict(result["metrics"])
+        metrics["split_name"] = split_name
+        split_metrics.append(metrics)
+
+    apply_params(strategy, params)
+    strategy.BACKTEST_START = "2025-01-01"
+    strategy.BACKTEST_END = "2026-03-27"
+    strategy.OUTPUT_DIR = runs_root / "full_sample"
+    strategy.ENABLE_INTRADAY_EXIT = OPTIMIZE_WITH_INTRADAY_EXIT
+    if hasattr(strategy, "STRICT_RISK_ON_FOR_ENTRY"):
+        strategy.STRICT_RISK_ON_FOR_ENTRY = True
+    best_full = strategy.run_backtest(
+        verbose=False,
+        export_outputs=True,
+        preloaded_context=preloaded_context,
+    )
+    return split_metrics, dict(best_full["metrics"])
+
+
+def write_best_summary(
+    path: Path,
+    split_summary_path: Path,
+    params: StrategyParams,
+    score_name: str,
+    row: dict,
+    full_sample_metrics: dict,
+    split_metrics: list[dict],
+) -> None:
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "strategy_file": str(STRATEGY_FILE),
+                "optimize_stage_name": OPTIMIZE_STAGE_NAME,
+                "score_name": score_name,
+                "best_params": asdict(params),
+                "objective_score_balanced": float(row["objective_score_balanced"]),
+                "objective_score_return": float(row["objective_score_return"]),
+                "full_sample_metrics": full_sample_metrics,
+            },
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
+    with split_summary_path.open("w", encoding="utf-8") as f:
+        json.dump(split_metrics, f, ensure_ascii=False, indent=2)
 
 
 def optimize() -> None:
@@ -236,6 +361,8 @@ def optimize() -> None:
 
     print("=" * 70)
     print("股票策略参数优化")
+    print(f"策略文件: {STRATEGY_FILE.name}")
+    print(f"优化阶段: {OPTIMIZE_STAGE_NAME}")
     print(f"候选参数组数: {len(candidates)}")
     print(f"已完成参数组数: {len(completed)}")
     print(f"输出目录: {OUTPUT_ROOT}")
@@ -258,87 +385,88 @@ def optimize() -> None:
         rows.append(row)
         completed.add(slug)
         leaderboard = persist_progress(rows)
-        current_best = leaderboard.iloc[0]
+        current_best_balanced = leaderboard.sort_values("objective_score_balanced", ascending=False).iloc[0]
+        current_best_return = leaderboard.sort_values("objective_score_return", ascending=False).iloc[0]
         unique_train_paths = leaderboard["train_sell_digest"].nunique() if "train_sell_digest" in leaderboard.columns else 0
         unique_validation_paths = leaderboard["validation_sell_digest"].nunique() if "validation_sell_digest" in leaderboard.columns else 0
         unique_test_paths = leaderboard["test_sell_digest"].nunique() if "test_sell_digest" in leaderboard.columns else 0
         print(
             f"已保存 {len(completed)}/{len(candidates)} | "
-            f"当前最佳 {current_best['param_slug']} | "
-            f"score {current_best['objective_score']:.2f} | "
+            f"平衡最佳 {current_best_balanced['param_slug']} ({current_best_balanced['objective_score_balanced']:.2f}) | "
+            f"收益最佳 {current_best_return['param_slug']} ({current_best_return['objective_score_return']:.2f}) | "
             f"path(train/val/test)={unique_train_paths}/{unique_validation_paths}/{unique_test_paths}"
         )
 
     leaderboard = persist_progress(rows)
 
-    best_row = leaderboard.iloc[0].to_dict()
-    best_params = StrategyParams(
-        top_n=int(best_row["top_n"]),
-        max_position_pct=float(best_row["max_position_pct"]),
-        min_ret20=float(best_row["min_ret20"]),
-        min_ma20_slope_pct=float(best_row["min_ma20_slope_pct"]),
-        min_intraday_close_from_low_pct=float(best_row["min_intraday_close_from_low_pct"]),
-        early_weak_exit_check_day=int(best_row["early_weak_exit_check_day"]),
-        early_weak_exit_min_close_ret=float(best_row["early_weak_exit_min_close_ret"]),
-        early_weak_exit_min_high_ret=float(best_row["early_weak_exit_min_high_ret"]),
-        trailing_stop_atr_multiplier=float(best_row["trailing_stop_atr_multiplier"]),
-        max_holding_days=int(best_row["max_holding_days"]),
-    )
+    best_balanced_row = leaderboard.sort_values(
+        by=["objective_score_balanced", "objective_score_return", "test_return_pct"],
+        ascending=False,
+    ).iloc[0].to_dict()
+    best_return_row = leaderboard.sort_values(
+        by=["objective_score_return", "objective_score_balanced", "test_return_pct"],
+        ascending=False,
+    ).iloc[0].to_dict()
 
-    best_split_metrics = []
+    best_balanced_params = row_to_params(best_balanced_row)
+    best_return_params = row_to_params(best_return_row)
+
     best_runs_root = OUTPUT_ROOT / "best_runs"
-    for split_name, start, end in TIME_SPLITS:
-        apply_params(strategy, best_params)
-        strategy.BACKTEST_START = start
-        strategy.BACKTEST_END = end
-        strategy.OUTPUT_DIR = best_runs_root / split_name
-        result = strategy.run_backtest(
-            verbose=False,
-            export_outputs=True,
-            preloaded_context=preloaded_context,
-        )
-        metrics = dict(result["metrics"])
-        metrics["split_name"] = split_name
-        best_split_metrics.append(metrics)
-
-    apply_params(strategy, best_params)
-    strategy.BACKTEST_START = "2025-01-01"
-    strategy.BACKTEST_END = "2026-03-27"
-    strategy.OUTPUT_DIR = best_runs_root / "full_sample"
-    best_full = strategy.run_backtest(
-        verbose=False,
-        export_outputs=True,
-        preloaded_context=preloaded_context,
+    balanced_split_metrics, balanced_full_metrics = run_best_bundle(
+        strategy,
+        best_balanced_params,
+        preloaded_context,
+        best_runs_root / "balanced",
+    )
+    return_split_metrics, return_full_metrics = run_best_bundle(
+        strategy,
+        best_return_params,
+        preloaded_context,
+        best_runs_root / "return",
     )
 
-    with BEST_PARAMS_PATH.open("w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "best_params": asdict(best_params),
-                "objective_score": float(best_row["objective_score"]),
-                "full_sample_metrics": best_full["metrics"],
-            },
-            f,
-            ensure_ascii=False,
-            indent=2,
-        )
-
-    with BEST_SPLIT_SUMMARY_PATH.open("w", encoding="utf-8") as f:
-        json.dump(best_split_metrics, f, ensure_ascii=False, indent=2)
+    write_best_summary(
+        BEST_PARAMS_PATH,
+        BEST_SPLIT_SUMMARY_PATH,
+        best_balanced_params,
+        "objective_score_balanced",
+        best_balanced_row,
+        balanced_full_metrics,
+        balanced_split_metrics,
+    )
+    write_best_summary(
+        BEST_PARAMS_RETURN_PATH,
+        BEST_SPLIT_SUMMARY_RETURN_PATH,
+        best_return_params,
+        "objective_score_return",
+        best_return_row,
+        return_full_metrics,
+        return_split_metrics,
+    )
 
     print("\n" + "=" * 70)
     print("参数优化完成")
     print("=" * 70)
     print(f"排行榜: {LEADERBOARD_PATH}")
-    print(f"最佳参数: {BEST_PARAMS_PATH}")
-    print(f"最佳参数时间切分汇总: {BEST_SPLIT_SUMMARY_PATH}")
-    print("最佳参数如下:")
-    for key, value in asdict(best_params).items():
+    print(f"平衡最佳参数: {BEST_PARAMS_PATH}")
+    print(f"平衡最佳时间切分汇总: {BEST_SPLIT_SUMMARY_PATH}")
+    print(f"收益最佳参数: {BEST_PARAMS_RETURN_PATH}")
+    print(f"收益最佳时间切分汇总: {BEST_SPLIT_SUMMARY_RETURN_PATH}")
+    print("平衡最佳参数如下:")
+    for key, value in asdict(best_balanced_params).items():
         print(f"{key} = {value}")
     print(
-        f"最佳参数全样本: 收益 {best_full['metrics']['return_pct']:+.2f}% | "
-        f"回撤 {best_full['metrics']['max_drawdown_pct']:.2f}% | "
-        f"Sharpe {best_full['metrics']['sharpe']:.2f}"
+        f"平衡最佳全样本: 收益 {balanced_full_metrics['return_pct']:+.2f}% | "
+        f"回撤 {balanced_full_metrics['max_drawdown_pct']:.2f}% | "
+        f"Sharpe {balanced_full_metrics['sharpe']:.2f}"
+    )
+    print("收益最佳参数如下:")
+    for key, value in asdict(best_return_params).items():
+        print(f"{key} = {value}")
+    print(
+        f"收益最佳全样本: 收益 {return_full_metrics['return_pct']:+.2f}% | "
+        f"回撤 {return_full_metrics['max_drawdown_pct']:.2f}% | "
+        f"Sharpe {return_full_metrics['sharpe']:.2f}"
     )
 
 

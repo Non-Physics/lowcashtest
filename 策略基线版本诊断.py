@@ -11,6 +11,8 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parent
 CURRENT_PATH = PROJECT_ROOT / "股票策略回测.py"
 BASELINE_PATH = PROJECT_ROOT / "股票策略回测_基线版.py"
+OUTPUT_DIR = PROJECT_ROOT / "outputs" / "策略基线版本诊断"
+OUTPUT_PATH = OUTPUT_DIR / "latest.json"
 
 PARAM_SETS = {
     "loose": {
@@ -80,15 +82,30 @@ def run_case(module, params: dict) -> dict:
 
 
 def main() -> None:
+    print("加载策略模块...")
     versions = {
         "current": load_module(CURRENT_PATH, "baseline_diag_current"),
         "baseline": load_module(BASELINE_PATH, "baseline_diag_baseline"),
     }
     summary = {}
+    total_runs = len(versions) * len(PARAM_SETS)
+    run_idx = 0
     for version_name, module in versions.items():
+        print(f"[版本] {version_name}")
         summary[version_name] = {}
         for case_name, params in PARAM_SETS.items():
+            run_idx += 1
+            print(f"  [{run_idx}/{total_runs}] 运行参数组: {case_name}")
             summary[version_name][case_name] = run_case(module, params)
+            metrics = summary[version_name][case_name]["metrics"]
+            print(
+                f"    完成 | return={metrics['return_pct']:+.2f}% "
+                f"sell_count={metrics['sell_trade_count']} "
+                f"final_value={metrics['final_value']:.2f}"
+            )
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    OUTPUT_PATH.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"全部完成，结果已写入: {OUTPUT_PATH}")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
