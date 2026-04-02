@@ -1,0 +1,252 @@
+from __future__ import annotations
+
+import argparse
+import importlib.util
+from pathlib import Path
+import sys
+from typing import Any
+
+from stock_trading.common import (
+    build_runtime_paths,
+    dump_json,
+    ensure_runtime_dirs,
+    load_due_orders,
+    load_state,
+    save_planned_orders,
+    save_state,
+    write_signal_report,
+)
+from stock_trading.execution import PaperExecutionAdapter
+from stock_trading.signal_service import StrategySignalService
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+
+
+def _load_project_module(module_name: str, filename: str):
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+    path = PROJECT_ROOT / filename
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"无法加载模块: {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="股票策略交易主流程")
+    parser.add_argument("--runtime-root", default="", help="交易执行运行目录，默认 outputs/股票策略交易执行")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    refresh = subparsers.add_parser("refresh-data", help="刷新本地数据")
+    refresh.add_argument("--check", action="store_true", help="刷新完成后顺带跑数据检查")
+
+    subparsers.add_parser("check-data", help="检查本地数据完整性")
+
+    gen = subparsers.add_parser("generate-signals", help="按基线策略生成次日订单")
+    gen.add_argument("--date", required=True, help="信号日期，例如 2026-04-02")
+    gen.add_argument("--strategy-version", default="baseline_live_v1")
+    gen.add_argument("--parameter-version", default="baseline_default")
+
+    exec_paper = subparsers.add_parser("paper-execute", help="执行到期纸面订单")
+    exec_paper.add_argument("--date", required=True, help="执行日期，例如 2026-04-03")
+
+    cycle = subparsers.add_parser("paper-cycle", help="串行执行 生成信号 -> 次日纸面成交")
+    cycle.add_argument("--signal-date", required=True)
+    cycle.add_argument("--execute-date", required=True)
+    cycle.add_argument("--strategy-version", default="baseline_live_v1")
+    cycle.add_argument("--parameter-version", default="baseline_default")
+
+    preview = subparsers.add_parser("preview-orders", help="预览某日将执行的待处理订单")
+    preview.add_argument("--date", required=True)
+
+    ths_preview = subparsers.add_parser("ths-preview", help="预览同花顺待提交订单")
+    ths_preview.add_argument("--date", required=True)
+    ths_preview.add_argument("--client-type", default="ths")
+    ths_preview.add_argument("--exe-path", default="")
+    ths_preview.add_argument("--account-json", default="")
+
+    ths_submit = subparsers.add_parser("ths-submit", help="通过同花顺客户端提交订单")
+    ths_submit.add_argument("--date", required=True)
+    ths_submit.add_argument("--client-type", default="ths")
+    ths_submit.add_argument("--exe-path", default="")
+    ths_submit.add_argument("--account-json", default="")
+    ths_submit.add_argument("--yes", action="store_true", help="跳过命令行二次确认")
+
+    ths_reconcile = subparsers.add_parser("ths-reconcile", help="抓取同花顺账户快照并与本地状态对账")
+    ths_reconcile.add_argument("--date", required=True)
+    ths_reconcile.add_argument("--client-type", default="ths")
+    ths_reconcile.add_argument("--exe-path", default="")
+    ths_reconcile.add_argument("--account-json", default="")
+
+    return parser.parse_args()
+
+
+def get_runtime_paths(args: argparse.Namespace):
+    runtime_root = Path(args.runtime_root) if args.runtime_root else None
+    paths = build_runtime_paths(runtime_root)
+    ensure_runtime_dirs(paths)
+    return paths
+
+
+def handle_refresh_data(with_check: bool) -> None:
+    downloader = _load_project_module("ths_downloader_live", "下载股票数据.py")
+    downloader.run()
+    if with_check:
+        checker = _load_project_module("ths_checker_live", "检查股票数据.py")
+        checker.main()
+
+
+def handle_check_data() -> None:
+    checker = _load_project_module("ths_checker_live", "检查股票数据.py")
+    checker.main()
+
+
+def handle_generate_signals(args: argparse.Namespace) -> None:
+    paths = get_runtime_paths(args)
+    signal_service = StrategySignalService()
+    state = load_state(
+        paths,
+        initial_capital=signal_service.baseline.INITIAL_CAPITAL,
+        strategy_version=args.strategy_version,
+        parameter_version=args.parameter_version,
+    )
+    run_result = signal_service.generate_for_date(
+        args.date,
+        state,
+        strategy_version=args.strategy_version,
+        parameter_version=args.parameter_version,
+    )
+    orders_path = save_planned_orders(run_result.orders, paths, args.date)
+    report_path = write_signal_report(run_result.report, paths, args.date)
+    save_state(run_result.updated_state, paths)
+
+    print(f"信号日期: {run_result.signal_date}")
+    print(f"预计执行日: {run_result.execute_date}")
+    print(f"订单数量: {len(run_result.orders)}")
+    print(f"订单文件: {orders_path}")
+    print(f"报告文件: {report_path}")
+
+
+def handle_paper_execute(args: argparse.Namespace) -> None:
+    paths = get_runtime_paths(args)
+    signal_service = StrategySignalService()
+    state = load_state(
+        paths,
+        initial_capital=signal_service.baseline.INITIAL_CAPITAL,
+    )
+    adapter = PaperExecutionAdapter(paths)
+    batch = adapter.execute_due_orders(args.date, state)
+    print(f"执行日期: {batch.trade_date}")
+    print(f"成交记录数: {len(batch.records)}")
+    print(f"日志文件: {batch.journal_path}")
+
+
+def handle_paper_cycle(args: argparse.Namespace) -> None:
+    paths = get_runtime_paths(args)
+    signal_service = StrategySignalService()
+    state = load_state(
+        paths,
+        initial_capital=signal_service.baseline.INITIAL_CAPITAL,
+        strategy_version=args.strategy_version,
+        parameter_version=args.parameter_version,
+    )
+    run_result = signal_service.generate_for_date(
+        args.signal_date,
+        state,
+        strategy_version=args.strategy_version,
+        parameter_version=args.parameter_version,
+    )
+    orders_path = save_planned_orders(run_result.orders, paths, args.signal_date)
+    report_path = write_signal_report(run_result.report, paths, args.signal_date)
+    save_state(run_result.updated_state, paths)
+
+    adapter = PaperExecutionAdapter(paths)
+    batch = adapter.execute_due_orders(args.execute_date, run_result.updated_state)
+
+    print(f"信号文件: {orders_path}")
+    print(f"信号报告: {report_path}")
+    print(f"执行日期: {batch.trade_date}")
+    print(f"成交记录数: {len(batch.records)}")
+    print(f"日志文件: {batch.journal_path}")
+
+
+def handle_preview_orders(args: argparse.Namespace) -> None:
+    paths = get_runtime_paths(args)
+    due_orders = load_due_orders(paths, args.date)
+    preview_path = paths.reports_dir / f"preview_orders_{args.date.replace('-', '')}.json"
+    dump_json({"trade_date": args.date, "orders": [order.to_dict() for order in due_orders]}, preview_path)
+    print(f"到期订单数: {len(due_orders)}")
+    print(f"预览文件: {preview_path}")
+
+
+def build_ths_adapter(args: argparse.Namespace):
+    adapter_module = _load_project_module("ths_gui_adapter_live", "股票策略同花顺适配.py")
+    config = adapter_module.TongHuaShunClientConfig(
+        client_type=args.client_type,
+        exe_path=args.exe_path,
+        account_json=args.account_json,
+        auto_confirm=getattr(args, "yes", False),
+    )
+    return adapter_module.TongHuaShunGuiAdapter(config)
+
+
+def handle_ths_preview(args: argparse.Namespace) -> None:
+    paths = get_runtime_paths(args)
+    due_orders = load_due_orders(paths, args.date)
+    adapter = build_ths_adapter(args)
+    preview = adapter.preview_orders(due_orders)
+    preview_path = paths.reports_dir / f"ths_preview_{args.date.replace('-', '')}.json"
+    dump_json({"trade_date": args.date, "orders": preview}, preview_path)
+    print(f"待提交订单数: {len(preview)}")
+    print(f"预览文件: {preview_path}")
+
+
+def handle_ths_submit(args: argparse.Namespace) -> None:
+    paths = get_runtime_paths(args)
+    due_orders = load_due_orders(paths, args.date)
+    adapter = build_ths_adapter(args)
+    submit_results = adapter.submit_orders(due_orders, auto_confirm=args.yes)
+    output_path = paths.reports_dir / f"ths_submit_{args.date.replace('-', '')}.json"
+    dump_json({"trade_date": args.date, "results": submit_results}, output_path)
+    print(f"提交结果文件: {output_path}")
+
+
+def handle_ths_reconcile(args: argparse.Namespace) -> None:
+    paths = get_runtime_paths(args)
+    signal_service = StrategySignalService()
+    state = load_state(paths, initial_capital=signal_service.baseline.INITIAL_CAPITAL)
+    due_orders = load_due_orders(paths, args.date)
+    adapter = build_ths_adapter(args)
+    snapshot = adapter.build_account_snapshot()
+    snapshot_path = paths.state_dir / f"account_snapshot_ths_{args.date.replace('-', '')}.json"
+    dump_json(snapshot, snapshot_path)
+
+    paper_adapter = PaperExecutionAdapter(paths)
+    report = paper_adapter.reconcile_with_state(args.date, state, due_orders, broker_name="ths", broker_snapshot=snapshot)
+    report_path = paths.reports_dir / f"reconcile_ths_{args.date.replace('-', '')}.json"
+    dump_json(report, report_path)
+    print(f"账户快照: {snapshot_path}")
+    print(f"对账报告: {report_path}")
+
+
+def main() -> None:
+    args = parse_args()
+    command_handlers: dict[str, Any] = {
+        "refresh-data": lambda: handle_refresh_data(args.check),
+        "check-data": handle_check_data,
+        "generate-signals": lambda: handle_generate_signals(args),
+        "paper-execute": lambda: handle_paper_execute(args),
+        "paper-cycle": lambda: handle_paper_cycle(args),
+        "preview-orders": lambda: handle_preview_orders(args),
+        "ths-preview": lambda: handle_ths_preview(args),
+        "ths-submit": lambda: handle_ths_submit(args),
+        "ths-reconcile": lambda: handle_ths_reconcile(args),
+    }
+    command_handlers[args.command]()
+
+
+if __name__ == "__main__":
+    main()

@@ -36,8 +36,6 @@ client.DataApi._DataApi__http_url = "http://tushare.xyz"
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_DATA_ROOT = PROJECT_ROOT / "data" / "stock_data"
-DEFAULT_TOKEN = "b1eff5f19497236f848d520d5f27ca4e4624b20889e51eaea7f629e1"
-
 START_DATE = "20230101"
 END_DATE = "20260331"
 INTRADAY_FREQ = "30min"
@@ -70,7 +68,7 @@ class Paths:
 
 
 def get_token() -> str:
-    token = os.getenv("TUSHARE_TOKEN", DEFAULT_TOKEN).strip()
+    token = os.getenv("TUSHARE_TOKEN", "").strip()
     if not token:
         raise RuntimeError("未检测到环境变量 TUSHARE_TOKEN。")
     return token
