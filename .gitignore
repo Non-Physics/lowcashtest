@@ -1,6 +1,8 @@
 .venv/
+.venv-trader32/
 __pycache__/
 .idea/
 outputs/
 data/
 *.pyc
+tmp.png

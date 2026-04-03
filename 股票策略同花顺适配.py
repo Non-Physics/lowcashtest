@@ -49,6 +49,15 @@ class TongHuaShunGuiAdapter:
             return self.connect()
         return self._client
 
+    def _read_raw(self, attr_name: str) -> tuple[Any, str | None]:
+        try:
+            value = getattr(self.client, attr_name, None)
+            if callable(value):
+                value = value()
+            return value, None
+        except Exception as exc:  # noqa: BLE001
+            return None, f"{type(exc).__name__}: {exc}"
+
     def preview_orders(self, orders: list[PlannedOrder]) -> list[dict[str, Any]]:
         preview = []
         for order in orders:
@@ -67,7 +76,7 @@ class TongHuaShunGuiAdapter:
         return preview
 
     def get_cash(self) -> float:
-        balance = getattr(self.client, "balance", [])
+        balance, _ = self._read_raw("balance")
         if isinstance(balance, list) and balance:
             row = balance[0]
         elif isinstance(balance, dict):
@@ -80,7 +89,9 @@ class TongHuaShunGuiAdapter:
         return 0.0
 
     def get_positions(self) -> list[dict[str, Any]]:
-        positions = getattr(self.client, "position", [])
+        positions, _ = self._read_raw("position")
+        if positions is None:
+            return []
         rows: list[dict[str, Any]] = []
         for row in positions:
             code = row.get("证券代码") or row.get("code") or row.get("股票代码")
@@ -97,28 +108,66 @@ class TongHuaShunGuiAdapter:
         return rows
 
     def get_today_entrusts(self) -> list[dict[str, Any]]:
-        entrusts = getattr(self.client, "today_entrusts", None)
-        if callable(entrusts):
-            return list(entrusts())
+        entrusts, _ = self._read_raw("today_entrusts")
         if entrusts is None:
             return []
         return list(entrusts)
 
     def get_today_trades(self) -> list[dict[str, Any]]:
-        trades = getattr(self.client, "today_trades", None)
-        if callable(trades):
-            return list(trades())
+        trades, _ = self._read_raw("today_trades")
         if trades is None:
             return []
         return list(trades)
 
     def build_account_snapshot(self) -> dict[str, Any]:
+        raw_balance, balance_error = self._read_raw("balance")
+        raw_positions, positions_error = self._read_raw("position")
+        raw_entrusts, entrusts_error = self._read_raw("today_entrusts")
+        raw_trades, trades_error = self._read_raw("today_trades")
+
+        normalized_positions = []
+        if raw_positions is not None:
+            for row in list(raw_positions):
+                code = row.get("证券代码") or row.get("code") or row.get("股票代码")
+                shares = row.get("股票余额") or row.get("当前持仓") or row.get("股份余额") or 0
+                available = row.get("可用余额") or row.get("可用股份") or shares
+                normalized_positions.append(
+                    {
+                        "code": str(code),
+                        "shares": int(float(shares)),
+                        "available_shares": int(float(available)),
+                        "raw": row,
+                    }
+                )
+
+        normalized_cash = 0.0
+        if isinstance(raw_balance, list) and raw_balance:
+            balance_row = raw_balance[0]
+        elif isinstance(raw_balance, dict):
+            balance_row = raw_balance
+        else:
+            balance_row = {}
+        for key in ["可用金额", "资金余额", "可用", "可用资金"]:
+            if key in balance_row:
+                normalized_cash = float(balance_row[key])
+                break
+
         return {
             "timestamp": as_dt_str(pd.Timestamp.now()),
-            "cash": self.get_cash(),
-            "positions": self.get_positions(),
-            "today_entrusts": self.get_today_entrusts(),
-            "today_trades": self.get_today_trades(),
+            "cash": normalized_cash,
+            "positions": normalized_positions,
+            "today_entrusts": list(raw_entrusts or []),
+            "today_trades": list(raw_trades or []),
+            "raw_balance": raw_balance,
+            "raw_positions": raw_positions,
+            "raw_today_entrusts": raw_entrusts,
+            "raw_today_trades": raw_trades,
+            "errors": {
+                "balance": balance_error,
+                "position": positions_error,
+                "today_entrusts": entrusts_error,
+                "today_trades": trades_error,
+            },
         }
 
     def submit_orders(
