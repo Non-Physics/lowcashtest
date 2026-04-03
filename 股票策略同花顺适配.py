@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any
 
 import pandas as pd
@@ -58,6 +59,147 @@ class TongHuaShunGuiAdapter:
         except Exception as exc:  # noqa: BLE001
             return None, f"{type(exc).__name__}: {exc}"
 
+    def _normalize_code(self, code: Any) -> str:
+        text = str(code or "").strip().upper()
+        if not text:
+            return ""
+        if "." in text:
+            return text
+        digits = re.sub(r"\D", "", text)
+        if len(digits) != 6:
+            return text
+        if digits.startswith(("600", "601", "603", "605", "688", "689", "510", "511", "512", "513", "515", "518", "588")):
+            suffix = ".SH"
+        elif digits.startswith(("430", "831", "832", "833", "834", "835", "836", "837", "838", "839", "870", "871", "872", "873", "874", "875", "876", "877", "878", "879")):
+            suffix = ".BJ"
+        else:
+            suffix = ".SZ"
+        return f"{digits}{suffix}"
+
+    def _normalize_position_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        code = self._normalize_code(row.get("证券代码") or row.get("code") or row.get("股票代码"))
+        shares = row.get("股票余额") or row.get("当前持仓") or row.get("股份余额") or 0
+        available = row.get("可用余额") or row.get("可用股份") or shares
+        return {
+            "code": code,
+            "shares": int(float(shares)),
+            "available_shares": int(float(available)),
+            "raw": row,
+        }
+
+    def _normalize_trade_like_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(row)
+        code_key = None
+        for key in ("证券代码", "股票代码", "code"):
+            if key in normalized:
+                code_key = key
+                break
+        if code_key is not None:
+            normalized[code_key] = self._normalize_code(normalized.get(code_key))
+        normalized["normalized_code"] = self._normalize_code(
+            row.get("证券代码") or row.get("股票代码") or row.get("code")
+        )
+        return normalized
+
+    def _parse_position_lines_from_ocr(self, lines: list[str]) -> list[dict[str, Any]]:
+        parsed: list[dict[str, Any]] = []
+        code_pattern = re.compile(r"\b(\d{6})\b")
+        float_pattern = re.compile(r"-?\d+(?:\.\d+)?")
+        int_pattern = re.compile(r"\b\d+\b")
+        for line in lines:
+            code_match = code_pattern.search(line)
+            if not code_match:
+                continue
+            code = code_match.group(1)
+            suffix = ".SH" if code.startswith("6") else ".SZ"
+            tail = line[code_match.end() :].strip()
+            numbers = [float(x) for x in float_pattern.findall(tail)]
+            int_numbers = [int(x) for x in int_pattern.findall(tail)]
+            shares = None
+            available_shares = None
+            price = None
+            market_value = None
+            if int_numbers:
+                share_candidates = [
+                    x
+                    for x in int_numbers
+                    if 1 <= x <= 1_000_000 and x % 100 == 0
+                ]
+                if share_candidates:
+                    shares = share_candidates[0]
+                    available_shares = share_candidates[1] if len(share_candidates) >= 2 else shares
+                else:
+                    fallback_ints = [x for x in int_numbers if 1 <= x <= 1_000_000]
+                    if fallback_ints:
+                        shares = fallback_ints[0]
+                        available_shares = shares
+
+            float_like = [x for x in numbers if abs(x - round(x)) > 1e-6]
+            if float_like:
+                # first decimal is usually a price-like field
+                price = float_like[0]
+                # the largest positive decimal is usually market value / amount-like
+                positives = [x for x in float_like if x > 0]
+                if positives:
+                    market_value = max(positives)
+
+            parsed.append(
+                {
+                    "code": f"{code}{suffix}",
+                    "shares": int(shares or 0),
+                    "available_shares": int(available_shares or shares or 0),
+                    "last_price_guess": price,
+                    "market_value_guess": market_value,
+                    "source": "ocr_fallback",
+                    "raw_line": line,
+                }
+            )
+        return parsed
+
+    def _ocr_grid_fallback(self) -> dict[str, Any]:
+        try:
+            import pytesseract
+            from PIL import ImageOps
+        except ImportError as exc:  # noqa: BLE001
+            return {"error": f"{type(exc).__name__}: {exc}", "ocr_lines": [], "positions": []}
+
+        result: dict[str, Any] = {
+            "error": None,
+            "ocr_lines": [],
+            "positions": [],
+            "selected_rectangle": "",
+        }
+        try:
+            window = self.client._main
+            candidates = []
+            for ctrl in window.descendants():
+                info = getattr(ctrl, "element_info", None)
+                cls = getattr(info, "class_name", "") or ""
+                cid = getattr(info, "control_id", None)
+                if cid != 1047 or cls != "CVirtualGridCtrl":
+                    continue
+                rect = ctrl.rectangle()
+                area = max(rect.right - rect.left, 0) * max(rect.bottom - rect.top, 0)
+                candidates.append((ctrl, area, rect.top))
+            candidates.sort(key=lambda item: (-item[1], item[2]))
+            if not candidates:
+                result["error"] = "未找到 1047/CVirtualGridCtrl 候选表格"
+                return result
+            wrapper = candidates[0][0]
+            rect = wrapper.rectangle()
+            result["selected_rectangle"] = f"{rect.left},{rect.top},{rect.right},{rect.bottom}"
+            image = wrapper.capture_as_image()
+            gray = ImageOps.grayscale(image)
+            enlarged = gray.resize((gray.width * 2, gray.height * 2))
+            text = pytesseract.image_to_string(enlarged, lang="eng", config="--psm 6")
+            lines = [line for line in text.splitlines() if line.strip()]
+            result["ocr_lines"] = lines[:80]
+            result["positions"] = self._parse_position_lines_from_ocr(lines)
+            return result
+        except Exception as exc:  # noqa: BLE001
+            result["error"] = f"{type(exc).__name__}: {exc}"
+            return result
+
     def preview_orders(self, orders: list[PlannedOrder]) -> list[dict[str, Any]]:
         preview = []
         for order in orders:
@@ -94,30 +236,20 @@ class TongHuaShunGuiAdapter:
             return []
         rows: list[dict[str, Any]] = []
         for row in positions:
-            code = row.get("证券代码") or row.get("code") or row.get("股票代码")
-            shares = row.get("股票余额") or row.get("当前持仓") or row.get("股份余额") or 0
-            available = row.get("可用余额") or row.get("可用股份") or shares
-            rows.append(
-                {
-                    "code": str(code),
-                    "shares": int(float(shares)),
-                    "available_shares": int(float(available)),
-                    "raw": row,
-                }
-            )
+            rows.append(self._normalize_position_row(row))
         return rows
 
     def get_today_entrusts(self) -> list[dict[str, Any]]:
         entrusts, _ = self._read_raw("today_entrusts")
         if entrusts is None:
             return []
-        return list(entrusts)
+        return [self._normalize_trade_like_row(row) for row in list(entrusts)]
 
     def get_today_trades(self) -> list[dict[str, Any]]:
         trades, _ = self._read_raw("today_trades")
         if trades is None:
             return []
-        return list(trades)
+        return [self._normalize_trade_like_row(row) for row in list(trades)]
 
     def build_account_snapshot(self) -> dict[str, Any]:
         raw_balance, balance_error = self._read_raw("balance")
@@ -128,17 +260,15 @@ class TongHuaShunGuiAdapter:
         normalized_positions = []
         if raw_positions is not None:
             for row in list(raw_positions):
-                code = row.get("证券代码") or row.get("code") or row.get("股票代码")
-                shares = row.get("股票余额") or row.get("当前持仓") or row.get("股份余额") or 0
-                available = row.get("可用余额") or row.get("可用股份") or shares
-                normalized_positions.append(
-                    {
-                        "code": str(code),
-                        "shares": int(float(shares)),
-                        "available_shares": int(float(available)),
-                        "raw": row,
-                    }
-                )
+                normalized_positions.append(self._normalize_position_row(row))
+
+        normalized_entrusts = []
+        if raw_entrusts is not None:
+            normalized_entrusts = [self._normalize_trade_like_row(row) for row in list(raw_entrusts)]
+
+        normalized_trades = []
+        if raw_trades is not None:
+            normalized_trades = [self._normalize_trade_like_row(row) for row in list(raw_trades)]
 
         normalized_cash = 0.0
         if isinstance(raw_balance, list) and raw_balance:
@@ -152,12 +282,24 @@ class TongHuaShunGuiAdapter:
                 normalized_cash = float(balance_row[key])
                 break
 
+        ocr_fallback = None
+        has_stock_value = False
+        if isinstance(balance_row, dict):
+            for key in ["股票市值", "A股市值", "证券市值"]:
+                if key in balance_row and float(balance_row[key]) > 0:
+                    has_stock_value = True
+                    break
+        if (raw_positions == [] or raw_positions is None) and has_stock_value:
+            ocr_fallback = self._ocr_grid_fallback()
+            if ocr_fallback and ocr_fallback.get("positions"):
+                normalized_positions = ocr_fallback["positions"]
+
         return {
             "timestamp": as_dt_str(pd.Timestamp.now()),
             "cash": normalized_cash,
             "positions": normalized_positions,
-            "today_entrusts": list(raw_entrusts or []),
-            "today_trades": list(raw_trades or []),
+            "today_entrusts": normalized_entrusts,
+            "today_trades": normalized_trades,
             "raw_balance": raw_balance,
             "raw_positions": raw_positions,
             "raw_today_entrusts": raw_entrusts,
@@ -168,6 +310,7 @@ class TongHuaShunGuiAdapter:
                 "today_entrusts": entrusts_error,
                 "today_trades": trades_error,
             },
+            "ocr_fallback": ocr_fallback,
         }
 
     def submit_orders(
