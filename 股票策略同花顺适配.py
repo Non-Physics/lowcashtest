@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import re
 from typing import Any
 
@@ -15,12 +16,15 @@ class TongHuaShunClientConfig:
     exe_path: str = ""
     account_json: str = ""
     auto_confirm: bool = False
+    grid_strategy_order: tuple[str, ...] = ("wmcopy", "copy")
+    pdf_root_dir: str = ""
 
 
 class TongHuaShunGuiAdapter:
     def __init__(self, config: TongHuaShunClientConfig | None = None) -> None:
         self.config = config or TongHuaShunClientConfig()
         self._client = None
+        self._last_read_diagnostics: dict[str, Any] = {}
 
     def _ensure_easytrader(self):
         try:
@@ -59,6 +63,193 @@ class TongHuaShunGuiAdapter:
         except Exception as exc:  # noqa: BLE001
             return None, f"{type(exc).__name__}: {exc}"
 
+    def _pdf_root_dir(self) -> Path:
+        if self.config.pdf_root_dir:
+            path = Path(self.config.pdf_root_dir)
+        else:
+            path = Path(__file__).resolve().parent / "outputs" / "股票策略交易执行" / "state" / "pdf_exports"
+        path.mkdir(parents=True, exist_ok=True)
+        for name in ("position", "today_trades", "today_entrusts"):
+            (path / name).mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _build_grid_strategy_instance(self, strategy_name: str):
+        easytrader = self._ensure_easytrader()
+        grid_strategies = getattr(easytrader, "grid_strategies", None)
+        if grid_strategies is None:
+            import easytrader.grid_strategies as grid_strategies  # type: ignore
+
+        normalized = strategy_name.strip().lower()
+        if normalized == "wmcopy":
+            strategy_cls = getattr(grid_strategies, "WMCopy", None)
+            if strategy_cls is None:
+                raise RuntimeError("easytrader.grid_strategies.WMCopy 不存在")
+            return strategy_cls()
+        if normalized == "copy":
+            strategy_cls = getattr(grid_strategies, "Copy", None)
+            if strategy_cls is None:
+                raise RuntimeError("easytrader.grid_strategies.Copy 不存在")
+            return strategy_cls()
+        raise RuntimeError(f"未知 grid strategy: {strategy_name}")
+
+    def _apply_grid_strategy(self, strategy_name: str) -> None:
+        client = self.client
+        client.grid_strategy = self._build_grid_strategy_instance(strategy_name)
+        if hasattr(client, "_grid_strategy_instance"):
+            client._grid_strategy_instance = None
+
+    def _row_count(self, value: Any) -> int:
+        if isinstance(value, list):
+            return len(value)
+        if isinstance(value, dict):
+            return 1
+        return 0
+
+    def _is_grid_payload_usable(self, attr_name: str, value: Any) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, list):
+            if not value:
+                return False
+            if attr_name == "position":
+                return any(
+                    isinstance(row, dict)
+                    and (row.get("证券代码") or row.get("股票代码") or row.get("code"))
+                    and (row.get("股票余额") or row.get("当前持仓") or row.get("股份余额") or 0)
+                    for row in value
+                )
+            if attr_name in {"today_trades", "today_entrusts"}:
+                return any(
+                    isinstance(row, dict)
+                    and (row.get("证券代码") or row.get("股票代码") or row.get("code"))
+                    for row in value
+                )
+            return True
+        if isinstance(value, dict):
+            return bool(value)
+        return False
+
+    def _read_grid_raw(self, attr_name: str) -> tuple[Any, str | None, list[dict[str, Any]], str | None]:
+        attempts: list[dict[str, Any]] = []
+        selected_strategy = None
+        for strategy_name in self.config.grid_strategy_order:
+            attempt: dict[str, Any] = {
+                "strategy": strategy_name,
+                "error": None,
+                "row_count": 0,
+                "usable": False,
+            }
+            try:
+                self._apply_grid_strategy(strategy_name)
+                value = getattr(self.client, attr_name, None)
+                if callable(value):
+                    value = value()
+                attempt["row_count"] = self._row_count(value)
+                attempt["usable"] = self._is_grid_payload_usable(attr_name, value)
+                attempts.append(attempt)
+                if attempt["usable"]:
+                    selected_strategy = strategy_name
+                    return value, None, attempts, selected_strategy
+            except Exception as exc:  # noqa: BLE001
+                attempt["error"] = f"{type(exc).__name__}: {exc}"
+                attempts.append(attempt)
+        error = " | ".join(
+            f"{item['strategy']}={item['error'] or 'empty'}"
+            for item in attempts
+        ) if attempts else "未执行 grid strategy"
+        return [], error, attempts, selected_strategy
+
+    def _extract_pdf_text(self, pdf_path: Path) -> str:
+        try:
+            from pypdf import PdfReader
+        except ImportError as exc:
+            raise RuntimeError("未安装 pypdf，请先在对应环境中安装。") from exc
+        reader = PdfReader(str(pdf_path))
+        return "\n".join((page.extract_text() or "") for page in reader.pages)
+
+    def _latest_pdf_for_attr(self, attr_name: str) -> Path | None:
+        pdf_dir = self._pdf_root_dir() / attr_name
+        pdf_files = sorted(pdf_dir.glob("*.pdf"), key=lambda p: p.stat().st_mtime, reverse=True)
+        return pdf_files[0] if pdf_files else None
+
+    def _parse_positions_from_pdf_text(self, text: str) -> list[dict[str, Any]]:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        parsed: list[dict[str, Any]] = []
+        header_seen = any("证券代码" in line and "证券名称" in line and "股票余额" in line for line in lines)
+        if not header_seen:
+            return []
+        for line in lines:
+            if not re.match(r"^\d{6}\s+\S+", line):
+                continue
+            parts = line.split()
+            if len(parts) < 10:
+                continue
+            code = self._normalize_code(parts[0])
+            name = parts[1]
+            try:
+                shares = int(float(parts[2]))
+                available = int(float(parts[3]))
+            except ValueError:
+                continue
+            row = {
+                "证券代码": parts[0],
+                "证券名称": name,
+                "股票余额": shares,
+                "可用余额": available,
+            }
+            if len(parts) >= 6:
+                row["成本价"] = parts[5] if parts[4].isdigit() else parts[5]
+            if len(parts) >= 7:
+                row["市价"] = parts[6]
+            if len(parts) >= 10:
+                row["市值"] = parts[9]
+            parsed.append(
+                {
+                    "code": code,
+                    "shares": shares,
+                    "available_shares": available,
+                    "raw": row,
+                    "source": "pdf_fallback",
+                    "raw_line": line,
+                }
+            )
+        return parsed
+
+    def _parse_trade_like_from_pdf_text(self, text: str) -> list[dict[str, Any]]:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        parsed: list[dict[str, Any]] = []
+        for line in lines:
+            code_match = re.search(r"\b(\d{6})\b", line)
+            if not code_match:
+                continue
+            if not (re.match(r"^\d{1,2}:\d{2}:\d{2}", line) or "买入" in line or "卖出" in line):
+                continue
+            code = code_match.group(1)
+            parsed.append(
+                {
+                    "证券代码": self._normalize_code(code),
+                    "raw_line": line,
+                    "source": "pdf_fallback",
+                }
+            )
+        return parsed
+
+    def _read_pdf_fallback(self, attr_name: str) -> tuple[Any, str | None, dict[str, Any]]:
+        pdf_path = self._latest_pdf_for_attr(attr_name)
+        meta = {"pdf_path": str(pdf_path) if pdf_path else "", "row_count": 0}
+        if pdf_path is None:
+            return [], "未找到 PDF 文件", meta
+        try:
+            text = self._extract_pdf_text(pdf_path)
+            if attr_name == "position":
+                parsed = self._parse_positions_from_pdf_text(text)
+            else:
+                parsed = self._parse_trade_like_from_pdf_text(text)
+            meta["row_count"] = self._row_count(parsed)
+            return parsed, None if parsed else "PDF 解析结果为空", meta
+        except Exception as exc:  # noqa: BLE001
+            return [], f"{type(exc).__name__}: {exc}", meta
+
     def _normalize_code(self, code: Any) -> str:
         text = str(code or "").strip().upper()
         if not text:
@@ -77,6 +268,19 @@ class TongHuaShunGuiAdapter:
         return f"{digits}{suffix}"
 
     def _normalize_position_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        if {"code", "shares", "available_shares"}.issubset(row.keys()):
+            normalized = {
+                "code": self._normalize_code(row.get("code")),
+                "shares": int(float(row.get("shares", 0) or 0)),
+                "available_shares": int(float(row.get("available_shares", row.get("shares", 0)) or 0)),
+            }
+            if "raw" in row:
+                normalized["raw"] = row.get("raw")
+            if "source" in row:
+                normalized["source"] = row.get("source")
+            if "raw_line" in row:
+                normalized["raw_line"] = row.get("raw_line")
+            return normalized
         code = self._normalize_code(row.get("证券代码") or row.get("code") or row.get("股票代码"))
         shares = row.get("股票余额") or row.get("当前持仓") or row.get("股份余额") or 0
         available = row.get("可用余额") or row.get("可用股份") or shares
@@ -231,7 +435,11 @@ class TongHuaShunGuiAdapter:
         return 0.0
 
     def get_positions(self) -> list[dict[str, Any]]:
-        positions, _ = self._read_raw("position")
+        positions, _, attempts, selected_strategy = self._read_grid_raw("position")
+        self._last_read_diagnostics["position"] = {
+            "strategy_attempts": attempts,
+            "strategy_selected": selected_strategy,
+        }
         if positions is None:
             return []
         rows: list[dict[str, Any]] = []
@@ -240,22 +448,81 @@ class TongHuaShunGuiAdapter:
         return rows
 
     def get_today_entrusts(self) -> list[dict[str, Any]]:
-        entrusts, _ = self._read_raw("today_entrusts")
+        entrusts, _, attempts, selected_strategy = self._read_grid_raw("today_entrusts")
+        self._last_read_diagnostics["today_entrusts"] = {
+            "strategy_attempts": attempts,
+            "strategy_selected": selected_strategy,
+        }
         if entrusts is None:
             return []
         return [self._normalize_trade_like_row(row) for row in list(entrusts)]
 
     def get_today_trades(self) -> list[dict[str, Any]]:
-        trades, _ = self._read_raw("today_trades")
+        trades, _, attempts, selected_strategy = self._read_grid_raw("today_trades")
+        self._last_read_diagnostics["today_trades"] = {
+            "strategy_attempts": attempts,
+            "strategy_selected": selected_strategy,
+        }
         if trades is None:
             return []
         return [self._normalize_trade_like_row(row) for row in list(trades)]
 
     def build_account_snapshot(self) -> dict[str, Any]:
         raw_balance, balance_error = self._read_raw("balance")
-        raw_positions, positions_error = self._read_raw("position")
-        raw_entrusts, entrusts_error = self._read_raw("today_entrusts")
-        raw_trades, trades_error = self._read_raw("today_trades")
+        raw_positions, positions_error, position_attempts, position_selected = self._read_grid_raw("position")
+        raw_entrusts, entrusts_error, entrust_attempts, entrust_selected = self._read_grid_raw("today_entrusts")
+        raw_trades, trades_error, trades_attempts, trades_selected = self._read_grid_raw("today_trades")
+
+        pdf_position_meta = None
+        if raw_positions == [] or raw_positions is None:
+            pdf_positions, pdf_error, pdf_position_meta = self._read_pdf_fallback("position")
+            position_attempts.append(
+                {
+                    "strategy": "pdf",
+                    "error": pdf_error,
+                    "row_count": self._row_count(pdf_positions),
+                    "usable": bool(pdf_positions),
+                    "pdf_path": (pdf_position_meta or {}).get("pdf_path", ""),
+                }
+            )
+            if pdf_positions:
+                raw_positions = pdf_positions
+                positions_error = None
+                position_selected = "pdf"
+
+        pdf_entrust_meta = None
+        if raw_entrusts == [] or raw_entrusts is None:
+            pdf_entrusts, pdf_error, pdf_entrust_meta = self._read_pdf_fallback("today_entrusts")
+            entrust_attempts.append(
+                {
+                    "strategy": "pdf",
+                    "error": pdf_error,
+                    "row_count": self._row_count(pdf_entrusts),
+                    "usable": bool(pdf_entrusts),
+                    "pdf_path": (pdf_entrust_meta or {}).get("pdf_path", ""),
+                }
+            )
+            if pdf_entrusts:
+                raw_entrusts = pdf_entrusts
+                entrusts_error = None
+                entrust_selected = "pdf"
+
+        pdf_trade_meta = None
+        if raw_trades == [] or raw_trades is None:
+            pdf_trades, pdf_error, pdf_trade_meta = self._read_pdf_fallback("today_trades")
+            trades_attempts.append(
+                {
+                    "strategy": "pdf",
+                    "error": pdf_error,
+                    "row_count": self._row_count(pdf_trades),
+                    "usable": bool(pdf_trades),
+                    "pdf_path": (pdf_trade_meta or {}).get("pdf_path", ""),
+                }
+            )
+            if pdf_trades:
+                raw_trades = pdf_trades
+                trades_error = None
+                trades_selected = "pdf"
 
         normalized_positions = []
         if raw_positions is not None:
@@ -309,6 +576,26 @@ class TongHuaShunGuiAdapter:
                 "position": positions_error,
                 "today_entrusts": entrusts_error,
                 "today_trades": trades_error,
+            },
+            "read_diagnostics": {
+                "position": {
+                    "strategy_attempts": position_attempts,
+                    "strategy_selected": "ocr_fallback" if ocr_fallback and ocr_fallback.get("positions") else position_selected,
+                    "raw_row_count": self._row_count(raw_positions),
+                    "parse_success": bool(normalized_positions),
+                },
+                "today_entrusts": {
+                    "strategy_attempts": entrust_attempts,
+                    "strategy_selected": entrust_selected,
+                    "raw_row_count": self._row_count(raw_entrusts),
+                    "parse_success": bool(normalized_entrusts),
+                },
+                "today_trades": {
+                    "strategy_attempts": trades_attempts,
+                    "strategy_selected": trades_selected,
+                    "raw_row_count": self._row_count(raw_trades),
+                    "parse_success": bool(normalized_trades),
+                },
             },
             "ocr_fallback": ocr_fallback,
         }

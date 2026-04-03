@@ -3,6 +3,8 @@
 __pycache__/
 .idea/
 outputs/
+backups/
 data/
 *.pyc
 tmp.png
+temp/

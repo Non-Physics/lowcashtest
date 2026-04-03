@@ -32,6 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--client-type", default="ths", help="easytrader client type")
     parser.add_argument("--python-exe", default=sys.executable, help="调用主流程脚本的 Python 解释器")
     parser.add_argument("--sleep-seconds", type=float, default=1.0, help="阶段内命令间等待秒数")
+    parser.add_argument("--pdf-root-dir", default="", help="PDF fallback 的根目录")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -82,6 +83,7 @@ def build_flow_command(
     date_value: str,
     client_type: str,
     exe_path: str,
+    pdf_root_dir: str,
     strategy_version: str | None = None,
     parameter_version: str | None = None,
 ) -> list[str]:
@@ -101,6 +103,8 @@ def build_flow_command(
             cmd.extend(["--parameter-version", parameter_version])
     if action.startswith("ths-"):
         cmd.extend(["--client-type", client_type, "--exe-path", exe_path])
+        if pdf_root_dir:
+            cmd.extend(["--pdf-root-dir", pdf_root_dir])
     return cmd
 
 
@@ -540,6 +544,7 @@ def handle_eod(args: argparse.Namespace) -> None:
             args.signal_date,
             args.client_type,
             args.exe_path,
+            args.pdf_root_dir,
             strategy_version=args.strategy_version,
             parameter_version=args.parameter_version,
         )
@@ -580,6 +585,7 @@ def handle_preopen(args: argparse.Namespace) -> None:
                 args.trade_date,
                 args.client_type,
                 args.exe_path,
+                args.pdf_root_dir,
             )
         )
         steps.append((action, result))
@@ -633,6 +639,7 @@ def handle_postcheck(args: argparse.Namespace) -> None:
             args.trade_date,
             args.client_type,
             args.exe_path,
+            args.pdf_root_dir,
         )
     )
     append_jsonl(day_log, {"step": "ths-reconcile", "result": result})

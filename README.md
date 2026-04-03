@@ -19,6 +19,7 @@
   - 可生成订单预览
   - 持仓/成交表已经出现成功读取
   - 委托/成交/持仓读取仍需继续观察稳定性
+  - 当前读表主路径已切换为 `PDF -> WMCopy/Copy -> OCR`
 
 ## 目录角色
 
@@ -54,6 +55,8 @@
   对 `CVirtualGridCtrl` 做聚焦与剪贴板抓取的诊断入口
 - [同花顺表格截图诊断.py](/mnt/d/量化/同花顺/pythonProject/同花顺表格截图诊断.py)
   对目标表格截图并 OCR，判断画面里是否真的显示了数据
+- [同花顺PDF解析诊断.py](/mnt/d/量化/同花顺/pythonProject/同花顺PDF解析诊断.py)
+  对手工打印出的 PDF 做文本提取与字段诊断
 - [股票策略交易主流程.py](/mnt/d/量化/同花顺/pythonProject/股票策略交易主流程.py)
   交易执行总控脚本
 - [股票策略同花顺适配.py](/mnt/d/量化/同花顺/pythonProject/股票策略同花顺适配.py)
@@ -144,6 +147,20 @@ python 同花顺表格抓取诊断.py --exe-path "D:\量化\同花顺\同花顺\
 python 同花顺表格截图诊断.py --exe-path "D:\量化\同花顺\同花顺\xiadan.exe" --menu-path "查询[F4],资金股票"
 ```
 
+如果你手工打印了 PDF，可以直接解析：
+
+```powershell
+python 同花顺PDF解析诊断.py --pdf-path "D:\量化\同花顺\pythonProject\temp\test.pdf"
+```
+
+建议后续把手工打印 PDF 存放在独立目录：
+
+- 持仓页：`outputs\股票策略交易执行\state\pdf_exports\position\`
+- 当日成交：`outputs\股票策略交易执行\state\pdf_exports\today_trades\`
+- 当日委托：`outputs\股票策略交易执行\state\pdf_exports\today_entrusts\`
+
+程序会按页面类型自动挑选最新 PDF。
+
 ## 当前已知问题
 
 ### 同花顺模拟盘读取问题
@@ -156,11 +173,12 @@ python 同花顺表格截图诊断.py --exe-path "D:\量化\同花顺\同花顺\
 - 适配层现已把券商裸代码进一步归一到标准代码格式
 - 32 位 Python 解决了兼容性问题，当前瓶颈转为“查询读取是否每次都稳定”
 - OCR 兜底已足够用于确认持仓股数，但不足以可靠恢复真实成交成本
+- 读表诊断现在会记录每次实际命中的策略路径，便于比较 `PDF / WMCopy / OCR` 成功率
 
 这说明问题已经从“完全读不到”进入了“可读但需要稳健化”的阶段，更像是：
 
 - 同花顺查询页加载、验证码、窗口焦点会影响读表成功率
-- `easytrader` 默认 grid 读取对当前模拟盘界面的适配度一般
+- `easytrader` 默认 `Copy` grid 读取对当前模拟盘界面的适配度一般，当前主路径已收敛到 PDF fallback
 - OCR 仍适合作为兜底，而不是主路径
 
 因此当前系统当前定位是：

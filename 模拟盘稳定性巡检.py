@@ -22,6 +22,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--client-type", default="ths", help="easytrader client type")
     parser.add_argument("--python-exe", default=sys.executable, help="调用主流程脚本的 Python 解释器")
     parser.add_argument("--sleep-seconds", type=float, default=2.0, help="每步之间等待秒数")
+    parser.add_argument("--pdf-root-dir", default="", help="PDF fallback 的根目录")
     return parser.parse_args()
 
 
@@ -38,8 +39,9 @@ def build_command(
     trade_date: str,
     client_type: str,
     exe_path: str,
+    pdf_root_dir: str,
 ) -> list[str]:
-    return [
+    cmd = [
         python_exe,
         str(PROJECT_ROOT / "股票策略交易主流程.py"),
         "--runtime-root",
@@ -52,6 +54,9 @@ def build_command(
         "--exe-path",
         exe_path,
     ]
+    if pdf_root_dir:
+        cmd.extend(["--pdf-root-dir", pdf_root_dir])
+    return cmd
 
 
 def run_step(
@@ -61,8 +66,9 @@ def run_step(
     trade_date: str,
     client_type: str,
     exe_path: str,
+    pdf_root_dir: str,
 ) -> dict[str, Any]:
-    cmd = build_command(python_exe, runtime_root, action, trade_date, client_type, exe_path)
+    cmd = build_command(python_exe, runtime_root, action, trade_date, client_type, exe_path, pdf_root_dir)
     started_at = time.strftime("%Y-%m-%d %H:%M:%S")
     completed = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     finished_at = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -93,11 +99,15 @@ def summarize_files(runtime_root: Path, trade_date: str) -> dict[str, Any]:
         "preview_path": str(preview_path),
     }
     if isinstance(snapshot, dict):
+        diagnostics = snapshot.get("read_diagnostics", {}) if isinstance(snapshot.get("read_diagnostics"), dict) else {}
         summary["snapshot"] = {
             "cash": snapshot.get("cash"),
             "position_count": len(snapshot.get("positions", [])),
             "entrust_count": len(snapshot.get("today_entrusts", [])),
             "trade_count": len(snapshot.get("today_trades", [])),
+            "position_strategy": ((diagnostics.get("position") or {}).get("strategy_selected")),
+            "entrust_strategy": ((diagnostics.get("today_entrusts") or {}).get("strategy_selected")),
+            "trade_strategy": ((diagnostics.get("today_trades") or {}).get("strategy_selected")),
         }
     if isinstance(reconcile, dict):
         summary["reconcile"] = {
@@ -132,6 +142,10 @@ def print_step_result(step: dict[str, Any], summary: dict[str, Any]) -> None:
         print(
             f"  snapshot cash={snap['cash']} positions={snap['position_count']} "
             f"entrusts={snap['entrust_count']} trades={snap['trade_count']}"
+        )
+        print(
+            f"  strategies position={snap['position_strategy']} "
+            f"entrust={snap['entrust_strategy']} trade={snap['trade_strategy']}"
         )
     if summary.get("preview"):
         print(f"  preview orders={summary['preview']['order_count']}")
@@ -172,6 +186,7 @@ def main() -> None:
                 trade_date=args.date,
                 client_type=args.client_type,
                 exe_path=args.exe_path,
+                pdf_root_dir=args.pdf_root_dir,
             )
             summary = summarize_files(runtime_root, args.date)
             record = {

@@ -67,12 +67,14 @@ def parse_args() -> argparse.Namespace:
     ths_preview.add_argument("--client-type", default="ths")
     ths_preview.add_argument("--exe-path", default="")
     ths_preview.add_argument("--account-json", default="")
+    ths_preview.add_argument("--pdf-root-dir", default="")
 
     ths_submit = subparsers.add_parser("ths-submit", help="通过同花顺客户端提交订单")
     ths_submit.add_argument("--date", required=True)
     ths_submit.add_argument("--client-type", default="ths")
     ths_submit.add_argument("--exe-path", default="")
     ths_submit.add_argument("--account-json", default="")
+    ths_submit.add_argument("--pdf-root-dir", default="")
     ths_submit.add_argument("--yes", action="store_true", help="跳过命令行二次确认")
 
     ths_reconcile = subparsers.add_parser("ths-reconcile", help="抓取同花顺账户快照并与本地状态对账")
@@ -80,6 +82,7 @@ def parse_args() -> argparse.Namespace:
     ths_reconcile.add_argument("--client-type", default="ths")
     ths_reconcile.add_argument("--exe-path", default="")
     ths_reconcile.add_argument("--account-json", default="")
+    ths_reconcile.add_argument("--pdf-root-dir", default="")
 
     return parser.parse_args()
 
@@ -189,6 +192,7 @@ def build_ths_adapter(args: argparse.Namespace):
         exe_path=args.exe_path,
         account_json=args.account_json,
         auto_confirm=getattr(args, "yes", False),
+        pdf_root_dir=getattr(args, "pdf_root_dir", ""),
     )
     return adapter_module.TongHuaShunGuiAdapter(config)
 
