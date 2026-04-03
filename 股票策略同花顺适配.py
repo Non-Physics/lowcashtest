@@ -219,15 +219,24 @@ class TongHuaShunGuiAdapter:
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         parsed: list[dict[str, Any]] = []
         for line in lines:
-            code_match = re.search(r"\b(\d{6})\b", line)
-            if not code_match:
+            if not re.match(r"^\d{8}\s+\d{1,2}:\d{2}:\d{2}\s+\d{6}\s+", line):
                 continue
-            if not (re.match(r"^\d{1,2}:\d{2}:\d{2}", line) or "买入" in line or "卖出" in line):
+            if not ("买入" in line or "卖出" in line):
                 continue
-            code = code_match.group(1)
+            parts = line.split()
+            if len(parts) < 8:
+                continue
+            trade_date, trade_time, code, name, action, qty_text, price_text, amount_text = parts[:8]
             parsed.append(
                 {
                     "证券代码": self._normalize_code(code),
+                    "证券名称": name,
+                    "成交日期": trade_date,
+                    "成交时间": trade_time,
+                    "操作": action,
+                    "成交数量": int(float(qty_text)),
+                    "成交均价": float(price_text),
+                    "成交金额": float(amount_text),
                     "raw_line": line,
                     "source": "pdf_fallback",
                 }
