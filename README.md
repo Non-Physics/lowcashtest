@@ -27,8 +27,14 @@
 
 - [股票策略回测_基线版.py](/mnt/d/量化/同花顺/pythonProject/股票策略回测_基线版.py)
   当前可信基线回测入口
+- [策略研究总览.py](/mnt/d/量化/同花顺/pythonProject/策略研究总览.py)
+  假期研究总入口，汇总数据覆盖、基线语义、参数优化与稳健性状态
 - [股票策略参数优化.py](/mnt/d/量化/同花顺/pythonProject/股票策略参数优化.py)
   基于基线策略的参数优化入口
+- [factor_research](/mnt/d/量化/同花顺/pythonProject/factor_research)
+  因子研究支线的代码骨架目录
+- [docs/因子研究支线任务书.md](/mnt/d/量化/同花顺/pythonProject/docs/因子研究支线任务书.md)
+  因子研究新对话的详细任务书
 - [股票策略回测.py](/mnt/d/量化/同花顺/pythonProject/股票策略回测.py)
   基础回测实现和指标函数
 
@@ -67,6 +73,8 @@
   枚举顶部 `ToolbarWindow32` 的按钮结构
 - [同花顺工具栏按钮探测.py](/mnt/d/量化/同花顺/pythonProject/同花顺工具栏按钮探测.py)
   点击指定工具栏按钮并判断是否会弹出打印对话框
+- [diagnostics/ths](/mnt/d/量化/同花顺/pythonProject/diagnostics/ths)
+  同花顺专项诊断脚本的规范归档目录
 - [股票策略交易主流程.py](/mnt/d/量化/同花顺/pythonProject/股票策略交易主流程.py)
   交易执行总控脚本
 - [股票策略同花顺适配.py](/mnt/d/量化/同花顺/pythonProject/股票策略同花顺适配.py)
@@ -88,6 +96,25 @@
 
 - WSL / Linux Python
 - 用于数据下载、回测、参数研究
+
+推荐假期研究顺序：
+
+```bash
+python 策略研究总览.py
+```
+
+```bash
+python 股票策略参数优化.py
+```
+
+```bash
+python 策略第二阶段稳健性诊断.py
+```
+
+如果要开一条独立的因子研究支线，先读这两个文件：
+
+- [docs/因子研究支线任务书.md](/mnt/d/量化/同花顺/pythonProject/docs/因子研究支线任务书.md)
+- [factor_research/README.md](/mnt/d/量化/同花顺/pythonProject/factor_research/README.md)
 
 ### 交易环境
 
@@ -135,6 +162,12 @@ python 交易_一键入口.py
 
 ```powershell
 python 交易_稳定性巡检.py --date 2025-03-07 --rounds 3
+```
+
+如果要连同原生 PDF 自动保存一起验：
+
+```powershell
+python 交易_稳定性巡检.py --date 2025-03-07 --rounds 3 --auto-export-pdf --pdf-printer "Microsoft Print to PDF"
 ```
 
 ### 6. 控件诊断
@@ -225,9 +258,10 @@ python 交易_半自动流程.py postcheck --trade-date 2025-03-07 --auto-export
 
 ## 后续攻关方向
 
-- 整理旧脚本、统一命名、沉淀项目文档
-- 继续分析同花顺模拟盘持仓/成交表控件结构
-- 判断是否需要绕过 `easytrader` 默认 grid 读取逻辑
+- 主线一：继续做基线策略优化、时间切分验证、失效区间复盘
+- 主线二：保持交易系统低风险稳健化，继续以 `PDF -> OCR` 为日常主路径
+- 次线：整理旧脚本、统一命名、沉淀项目文档
+- 次线：继续分析同花顺模拟盘持仓/成交表控件结构，但不把它重新拉回主流程
 - 在读取稳定前，不把自动提交作为核心依赖
 
 ## 更多说明
