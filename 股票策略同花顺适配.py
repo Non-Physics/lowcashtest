@@ -16,8 +16,9 @@ class TongHuaShunClientConfig:
     exe_path: str = ""
     account_json: str = ""
     auto_confirm: bool = False
-    grid_strategy_order: tuple[str, ...] = ("wmcopy", "copy")
+    grid_strategy_order: tuple[str, ...] = ()
     pdf_root_dir: str = ""
+    prefer_pdf_first: bool = True
 
 
 class TongHuaShunGuiAdapter:
@@ -478,12 +479,32 @@ class TongHuaShunGuiAdapter:
 
     def build_account_snapshot(self) -> dict[str, Any]:
         raw_balance, balance_error = self._read_raw("balance")
-        raw_positions, positions_error, position_attempts, position_selected = self._read_grid_raw("position")
-        raw_entrusts, entrusts_error, entrust_attempts, entrust_selected = self._read_grid_raw("today_entrusts")
-        raw_trades, trades_error, trades_attempts, trades_selected = self._read_grid_raw("today_trades")
+        raw_positions, positions_error, position_attempts, position_selected = [], None, [], None
+        raw_entrusts, entrusts_error, entrust_attempts, entrust_selected = [], None, [], None
+        raw_trades, trades_error, trades_attempts, trades_selected = [], None, [], None
+
+        if self.config.prefer_pdf_first:
+            pdf_positions, pdf_error, pdf_position_meta = self._read_pdf_fallback("position")
+            position_attempts.append(
+                {
+                    "strategy": "pdf",
+                    "error": pdf_error,
+                    "row_count": self._row_count(pdf_positions),
+                    "usable": bool(pdf_positions),
+                    "pdf_path": (pdf_position_meta or {}).get("pdf_path", ""),
+                }
+            )
+            if pdf_positions:
+                raw_positions = pdf_positions
+                position_selected = "pdf"
+            else:
+                raw_positions, positions_error, grid_attempts, position_selected = self._read_grid_raw("position")
+                position_attempts.extend(grid_attempts)
+        else:
+            raw_positions, positions_error, position_attempts, position_selected = self._read_grid_raw("position")
 
         pdf_position_meta = None
-        if raw_positions == [] or raw_positions is None:
+        if not self.config.prefer_pdf_first and (raw_positions == [] or raw_positions is None):
             pdf_positions, pdf_error, pdf_position_meta = self._read_pdf_fallback("position")
             position_attempts.append(
                 {
@@ -499,8 +520,28 @@ class TongHuaShunGuiAdapter:
                 positions_error = None
                 position_selected = "pdf"
 
+        if self.config.prefer_pdf_first:
+            pdf_entrusts, pdf_error, pdf_entrust_meta = self._read_pdf_fallback("today_entrusts")
+            entrust_attempts.append(
+                {
+                    "strategy": "pdf",
+                    "error": pdf_error,
+                    "row_count": self._row_count(pdf_entrusts),
+                    "usable": bool(pdf_entrusts),
+                    "pdf_path": (pdf_entrust_meta or {}).get("pdf_path", ""),
+                }
+            )
+            if pdf_entrusts:
+                raw_entrusts = pdf_entrusts
+                entrust_selected = "pdf"
+            else:
+                raw_entrusts, entrusts_error, grid_attempts, entrust_selected = self._read_grid_raw("today_entrusts")
+                entrust_attempts.extend(grid_attempts)
+        else:
+            raw_entrusts, entrusts_error, entrust_attempts, entrust_selected = self._read_grid_raw("today_entrusts")
+
         pdf_entrust_meta = None
-        if raw_entrusts == [] or raw_entrusts is None:
+        if not self.config.prefer_pdf_first and (raw_entrusts == [] or raw_entrusts is None):
             pdf_entrusts, pdf_error, pdf_entrust_meta = self._read_pdf_fallback("today_entrusts")
             entrust_attempts.append(
                 {
@@ -516,8 +557,28 @@ class TongHuaShunGuiAdapter:
                 entrusts_error = None
                 entrust_selected = "pdf"
 
+        if self.config.prefer_pdf_first:
+            pdf_trades, pdf_error, pdf_trade_meta = self._read_pdf_fallback("today_trades")
+            trades_attempts = [
+                {
+                    "strategy": "pdf",
+                    "error": pdf_error,
+                    "row_count": self._row_count(pdf_trades),
+                    "usable": bool(pdf_trades),
+                    "pdf_path": (pdf_trade_meta or {}).get("pdf_path", ""),
+                }
+            ]
+            if pdf_trades:
+                raw_trades = pdf_trades
+                trades_selected = "pdf"
+            else:
+                raw_trades, trades_error, grid_attempts, trades_selected = self._read_grid_raw("today_trades")
+                trades_attempts.extend(grid_attempts)
+        else:
+            raw_trades, trades_error, trades_attempts, trades_selected = self._read_grid_raw("today_trades")
+
         pdf_trade_meta = None
-        if raw_trades == [] or raw_trades is None:
+        if not self.config.prefer_pdf_first and (raw_trades == [] or raw_trades is None):
             pdf_trades, pdf_error, pdf_trade_meta = self._read_pdf_fallback("today_trades")
             trades_attempts.append(
                 {

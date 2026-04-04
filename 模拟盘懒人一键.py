@@ -31,6 +31,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rounds", type=int, default=3, help="稳定性巡检轮数")
     parser.add_argument("--refresh-data", action="store_true", help="EOD 时先刷新数据")
     parser.add_argument("--sync-cash", action="store_true", help="盘前若空仓则同步券商现金")
+    parser.add_argument("--auto-export-pdf", action="store_true", help="在 preopen/postcheck 前自动导出 PDF")
+    parser.add_argument("--pdf-printer", default="Microsoft Print to PDF", help="自动导出时使用的 PDF 打印机")
+    parser.add_argument("--pdf-incoming-dir", default="", help="PDFCreator 自动保存接收目录")
     return parser.parse_args()
 
 
@@ -117,6 +120,10 @@ def run_and_print(cmd: list[str]) -> int:
 
 def build_daily_cmd(command: str, signal_date: str = "", trade_date: str = "") -> list[str]:
     base = [args.python_exe, str(PROJECT_ROOT / "模拟盘半自动日常.py"), "--runtime-root", args.runtime_root, "--exe-path", args.exe_path]
+    if args.auto_export_pdf:
+        base.extend(["--auto-export-pdf", "--pdf-printer", args.pdf_printer])
+        if args.pdf_incoming_dir:
+            base.extend(["--pdf-incoming-dir", args.pdf_incoming_dir])
     if command == "eod":
         cmd = base + ["eod", "--signal-date", signal_date]
         if args.refresh_data:

@@ -84,6 +84,19 @@ def parse_args() -> argparse.Namespace:
     ths_reconcile.add_argument("--account-json", default="")
     ths_reconcile.add_argument("--pdf-root-dir", default="")
 
+    ths_export_pdf = subparsers.add_parser("ths-export-pdf", help="从同花顺查询页打印并自动保存 PDF")
+    ths_export_pdf.add_argument("--date", required=True)
+    ths_export_pdf.add_argument("--page", required=True, choices=["position", "today_trades", "today_entrusts"])
+    ths_export_pdf.add_argument("--exe-path", default="")
+    ths_export_pdf.add_argument("--pdf-root-dir", default="")
+    ths_export_pdf.add_argument("--printer", default="Microsoft Print to PDF")
+    ths_export_pdf.add_argument("--incoming-dir", default="")
+    ths_export_pdf.add_argument("--title-re", default=r".*(网上股票交易系统|股票交易系统|同花顺).*")
+    ths_export_pdf.add_argument("--backend", default="win32", choices=["win32", "uia"])
+    ths_export_pdf.add_argument("--print-dialog-title-re", default=r".*(打印|Print).*")
+    ths_export_pdf.add_argument("--print-dialog-timeout", type=float, default=10.0)
+    ths_export_pdf.add_argument("--export-timeout", type=float, default=30.0)
+
     return parser.parse_args()
 
 
@@ -236,6 +249,50 @@ def handle_ths_reconcile(args: argparse.Namespace) -> None:
     print(f"对账报告: {report_path}")
 
 
+def handle_ths_export_pdf(args: argparse.Namespace) -> None:
+    paths = get_runtime_paths(args)
+    exporter_module = _load_project_module("ths_pdf_exporter_live", "同花顺PDF自动导出.py")
+    config = exporter_module.PdfExportConfig(
+        exe_path=args.exe_path,
+        page=args.page,
+        trade_date=args.date,
+        printer=args.printer,
+        title_re=args.title_re,
+        backend=args.backend,
+        pdf_root_dir=args.pdf_root_dir or str(paths.state_dir / "pdf_exports"),
+        incoming_dir=args.incoming_dir,
+        output_dir=str(paths.reports_dir),
+        print_dialog_title_re=args.print_dialog_title_re,
+        print_dialog_timeout=args.print_dialog_timeout,
+        export_timeout=args.export_timeout,
+    )
+    result = exporter_module.export_pdf(config)
+    report_path = exporter_module.write_report(config, result)
+    print(f"页面: {result['page']}")
+    print(f"成功: {result['success']}")
+    if result.get("trigger_method"):
+        print(f"打印触发: {result['trigger_method']}")
+    if result.get("progress"):
+        print("进度:")
+        for step in result["progress"]:
+            print(f"  - {step}")
+    if result.get("target_pdf"):
+        print(f"目标文件: {result['target_pdf']}")
+    if result.get("error"):
+        print(f"错误: {result['error']}")
+    if result.get("print_candidates"):
+        print("疑似打印入口:")
+        for item in result["print_candidates"][:10]:
+            print(f"  - {item.get('class_name','')} | {item.get('text','')}")
+    print(f"报告文件: {report_path}")
+    if result.get("warnings"):
+        print("警告:")
+        for warning in result["warnings"]:
+            print(f"  - {warning}")
+    if not result["success"]:
+        raise RuntimeError(result.get("error") or "PDF 导出失败")
+
+
 def main() -> None:
     args = parse_args()
     command_handlers: dict[str, Any] = {
@@ -248,6 +305,7 @@ def main() -> None:
         "ths-preview": lambda: handle_ths_preview(args),
         "ths-submit": lambda: handle_ths_submit(args),
         "ths-reconcile": lambda: handle_ths_reconcile(args),
+        "ths-export-pdf": lambda: handle_ths_export_pdf(args),
     }
     command_handlers[args.command]()
 

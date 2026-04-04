@@ -19,7 +19,7 @@
   - 可生成订单预览
   - 持仓/成交表已经出现成功读取
   - 委托/成交/持仓读取仍需继续观察稳定性
-  - 当前读表主路径已切换为 `PDF -> WMCopy/Copy -> OCR`
+  - 当前读表主路径已切换为 `PDF -> OCR`
 
 ## 目录角色
 
@@ -57,6 +57,16 @@
   对目标表格截图并 OCR，判断画面里是否真的显示了数据
 - [同花顺PDF解析诊断.py](/mnt/d/量化/同花顺/pythonProject/同花顺PDF解析诊断.py)
   对手工打印出的 PDF 做文本提取与字段诊断
+- [同花顺PDF自动导出.py](/mnt/d/量化/同花顺/pythonProject/同花顺PDF自动导出.py)
+  从同花顺查询页触发打印，并配合原生 `Microsoft Print to PDF` 自动命名保存
+- [保存打印输出对话框诊断.py](/mnt/d/量化/同花顺/pythonProject/保存打印输出对话框诊断.py)
+  专门检查“将打印输出另存为”系统对话框的标题和控件结构
+- [同花顺打印入口诊断.py](/mnt/d/量化/同花顺/pythonProject/同花顺打印入口诊断.py)
+  检查当前查询页可能的打印入口控件
+- [同花顺工具栏诊断.py](/mnt/d/量化/同花顺/pythonProject/同花顺工具栏诊断.py)
+  枚举顶部 `ToolbarWindow32` 的按钮结构
+- [同花顺工具栏按钮探测.py](/mnt/d/量化/同花顺/pythonProject/同花顺工具栏按钮探测.py)
+  点击指定工具栏按钮并判断是否会弹出打印对话框
 - [股票策略交易主流程.py](/mnt/d/量化/同花顺/pythonProject/股票策略交易主流程.py)
   交易执行总控脚本
 - [股票策略同花顺适配.py](/mnt/d/量化/同花顺/pythonProject/股票策略同花顺适配.py)
@@ -161,6 +171,28 @@ python 同花顺PDF解析诊断.py --pdf-path "D:\量化\同花顺\pythonProject
 
 程序会按页面类型自动挑选最新 PDF。
 
+如果你使用 Windows 自带的 `Microsoft Print to PDF`，程序现在可以自动打印并填入保存路径：
+
+```powershell
+python 股票策略交易主流程.py ths-export-pdf --date 2025-03-07 --page position --exe-path "D:\量化\同花顺\同花顺\xiadan.exe" --printer "Microsoft Print to PDF"
+```
+
+当日成交页同理：
+
+```powershell
+python 股票策略交易主流程.py ths-export-pdf --date 2025-03-07 --page today_trades --exe-path "D:\量化\同花顺\同花顺\xiadan.exe" --printer "Microsoft Print to PDF"
+```
+
+半自动流程可在对账前先自动导出 PDF：
+
+```powershell
+python 交易_半自动流程.py preopen --trade-date 2025-03-07 --auto-export-pdf --sync-cash
+```
+
+```powershell
+python 交易_半自动流程.py postcheck --trade-date 2025-03-07 --auto-export-pdf --manual-status 已成交
+```
+
 ## 当前已知问题
 
 ### 同花顺模拟盘读取问题
@@ -178,7 +210,7 @@ python 同花顺PDF解析诊断.py --pdf-path "D:\量化\同花顺\pythonProject
 这说明问题已经从“完全读不到”进入了“可读但需要稳健化”的阶段，更像是：
 
 - 同花顺查询页加载、验证码、窗口焦点会影响读表成功率
-- `easytrader` 默认 `Copy` grid 读取对当前模拟盘界面的适配度一般，当前主路径已收敛到 PDF fallback
+- `easytrader` 默认 `Copy` grid 读取对当前模拟盘界面的适配度一般，当前日常主路径已收敛到 `PDF -> OCR`
 - OCR 仍适合作为兜底，而不是主路径
 
 因此当前系统当前定位是：

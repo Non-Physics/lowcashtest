@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import locale
 import json
 import re
 import subprocess
@@ -33,6 +34,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--python-exe", default=sys.executable, help="调用主流程脚本的 Python 解释器")
     parser.add_argument("--sleep-seconds", type=float, default=1.0, help="阶段内命令间等待秒数")
     parser.add_argument("--pdf-root-dir", default="", help="PDF fallback 的根目录")
+    parser.add_argument("--auto-export-pdf", action="store_true", help="在对账前自动导出 PDF")
+    parser.add_argument("--pdf-printer", default="Microsoft Print to PDF", help="自动导出时使用的 PDF 打印机名称")
+    parser.add_argument("--pdf-incoming-dir", default="", help="PDFCreator 自动保存的接收目录")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -64,7 +68,8 @@ def parse_args() -> argparse.Namespace:
 
 def run_command(cmd: list[str]) -> dict[str, Any]:
     started_at = time.strftime("%Y-%m-%d %H:%M:%S")
-    completed = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    preferred_encoding = locale.getpreferredencoding(False) or "utf-8"
+    completed = subprocess.run(cmd, capture_output=True, text=True, encoding=preferred_encoding, errors="replace")
     finished_at = time.strftime("%Y-%m-%d %H:%M:%S")
     return {
         "command": cmd,
@@ -105,6 +110,38 @@ def build_flow_command(
         cmd.extend(["--client-type", client_type, "--exe-path", exe_path])
         if pdf_root_dir:
             cmd.extend(["--pdf-root-dir", pdf_root_dir])
+    return cmd
+
+
+def build_export_command(
+    python_exe: str,
+    runtime_root: Path,
+    trade_date: str,
+    page: str,
+    exe_path: str,
+    pdf_root_dir: str,
+    pdf_printer: str,
+    pdf_incoming_dir: str,
+) -> list[str]:
+    cmd = [
+        python_exe,
+        str(PROJECT_ROOT / "股票策略交易主流程.py"),
+        "--runtime-root",
+        str(runtime_root),
+        "ths-export-pdf",
+        "--date",
+        trade_date,
+        "--page",
+        page,
+        "--exe-path",
+        exe_path,
+        "--printer",
+        pdf_printer,
+    ]
+    if pdf_root_dir:
+        cmd.extend(["--pdf-root-dir", pdf_root_dir])
+    if pdf_incoming_dir:
+        cmd.extend(["--incoming-dir", pdf_incoming_dir])
     return cmd
 
 
@@ -576,6 +613,24 @@ def handle_preopen(args: argparse.Namespace) -> None:
     day_log = log_path(runtime_root, tag)
     steps = []
 
+    if args.auto_export_pdf:
+        export_result = run_command(
+            build_export_command(
+                args.python_exe,
+                runtime_root,
+                args.trade_date,
+                "position",
+                args.exe_path,
+                args.pdf_root_dir,
+                args.pdf_printer,
+                args.pdf_incoming_dir,
+            )
+        )
+        steps.append(("ths-export-pdf[position]", export_result))
+        append_jsonl(day_log, {"step": "ths-export-pdf[position]", "result": export_result})
+        print_command_result("ths-export-pdf[position]", export_result)
+        time.sleep(args.sleep_seconds)
+
     for action in ["ths-reconcile", "ths-preview"]:
         result = run_command(
             build_flow_command(
@@ -630,6 +685,24 @@ def handle_postcheck(args: argparse.Namespace) -> None:
     ensure_runtime_dirs(build_runtime_paths(runtime_root))
     tag = f"postcheck_{args.trade_date.replace('-', '')}"
     day_log = log_path(runtime_root, tag)
+
+    if args.auto_export_pdf:
+        for page in ["position", "today_trades"]:
+            export_result = run_command(
+                build_export_command(
+                    args.python_exe,
+                    runtime_root,
+                    args.trade_date,
+                    page,
+                    args.exe_path,
+                    args.pdf_root_dir,
+                    args.pdf_printer,
+                    args.pdf_incoming_dir,
+                )
+            )
+            append_jsonl(day_log, {"step": f"ths-export-pdf[{page}]", "result": export_result})
+            print_command_result(f"ths-export-pdf[{page}]", export_result)
+            time.sleep(args.sleep_seconds)
 
     result = run_command(
         build_flow_command(
