@@ -33,7 +33,7 @@
   基于基线策略的参数优化入口
 - [factor_research](/mnt/d/量化/同花顺/pythonProject/factor_research)
   因子研究支线的代码骨架目录
-- [docs/因子研究支线任务书.md](/mnt/d/量化/同花顺/pythonProject/docs/因子研究支线任务书.md)
+- [docs/research/因子研究支线任务书.md](/mnt/d/量化/同花顺/pythonProject/docs/research/因子研究支线任务书.md)
   因子研究新对话的详细任务书
 - [股票策略回测.py](/mnt/d/量化/同花顺/pythonProject/股票策略回测.py)
   基础回测实现和指标函数
@@ -113,7 +113,7 @@ python 策略第二阶段稳健性诊断.py
 
 如果要开一条独立的因子研究支线，先读这两个文件：
 
-- [docs/因子研究支线任务书.md](/mnt/d/量化/同花顺/pythonProject/docs/因子研究支线任务书.md)
+- [docs/research/因子研究支线任务书.md](/mnt/d/量化/同花顺/pythonProject/docs/research/因子研究支线任务书.md)
 - [factor_research/README.md](/mnt/d/量化/同花顺/pythonProject/factor_research/README.md)
 
 ### 交易环境
@@ -266,5 +266,5 @@ python 交易_半自动流程.py postcheck --trade-date 2025-03-07 --auto-export
 
 ## 更多说明
 
-- [docs/项目导览.md](/mnt/d/量化/同花顺/pythonProject/docs/项目导览.md)
-- [docs/同花顺模拟盘问题记录.md](/mnt/d/量化/同花顺/pythonProject/docs/同花顺模拟盘问题记录.md)
+- [docs/guide/项目导览.md](/mnt/d/量化/同花顺/pythonProject/docs/guide/项目导览.md)
+- [docs/issues/同花顺模拟盘问题记录.md](/mnt/d/量化/同花顺/pythonProject/docs/issues/同花顺模拟盘问题记录.md)

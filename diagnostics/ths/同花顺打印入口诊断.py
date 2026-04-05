@@ -6,6 +6,6 @@ from pathlib import Path
 
 if __name__ == "__main__":
     runpy.run_path(
-        str(Path(__file__).resolve().parent / "diagnostics" / "ths" / "同花顺PDF解析诊断.py"),
+        str(Path(__file__).resolve().with_name("同花顺打印入口诊断_impl.py")),
         run_name="__main__",
     )
