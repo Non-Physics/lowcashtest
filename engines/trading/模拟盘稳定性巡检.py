@@ -1,0 +1,333 @@
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_RUNTIME_ROOT = PROJECT_ROOT / "outputs" / "股票策略交易执行"
+DEFAULT_EXE_PATH = r"D:\量化\同花顺\同花顺\xiadan.exe"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="模拟盘稳定性巡检")
+    parser.add_argument("--date", required=True, help="巡检日期，例如 2025-03-07")
+    parser.add_argument("--rounds", type=int, default=3, help="重复轮数，默认 3")
+    parser.add_argument("--runtime-root", default=str(DEFAULT_RUNTIME_ROOT), help="交易运行目录")
+    parser.add_argument("--exe-path", default=DEFAULT_EXE_PATH, help="同花顺下单端 exe 路径")
+    parser.add_argument("--client-type", default="ths", help="easytrader client type")
+    parser.add_argument("--python-exe", default=sys.executable, help="调用主流程脚本的 Python 解释器")
+    parser.add_argument("--sleep-seconds", type=float, default=2.0, help="每步之间等待秒数")
+    parser.add_argument("--pdf-root-dir", default="", help="PDF fallback 的根目录")
+    parser.add_argument("--auto-export-pdf", action="store_true", help="巡检前自动导出 PDF")
+    parser.add_argument("--pdf-printer", default="Microsoft Print to PDF", help="自动导出 PDF 时使用的打印机")
+    parser.add_argument("--pdf-incoming-dir", default="", help="PDFCreator 等打印机的自动保存接收目录")
+    return parser.parse_args()
+
+
+def load_json(path: Path) -> dict[str, Any] | list[Any] | None:
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def build_command(
+    python_exe: str,
+    runtime_root: str,
+    action: str,
+    trade_date: str,
+    client_type: str,
+    exe_path: str,
+    pdf_root_dir: str,
+) -> list[str]:
+    cmd = [
+        python_exe,
+        str(PROJECT_ROOT / "股票策略交易主流程.py"),
+        "--runtime-root",
+        runtime_root,
+        action,
+        "--date",
+        trade_date,
+        "--client-type",
+        client_type,
+        "--exe-path",
+        exe_path,
+    ]
+    if pdf_root_dir:
+        cmd.extend(["--pdf-root-dir", pdf_root_dir])
+    return cmd
+
+
+def build_export_command(
+    python_exe: str,
+    runtime_root: str,
+    trade_date: str,
+    exe_path: str,
+    page: str,
+    pdf_root_dir: str,
+    pdf_printer: str,
+    pdf_incoming_dir: str,
+) -> list[str]:
+    cmd = [
+        python_exe,
+        str(PROJECT_ROOT / "股票策略交易主流程.py"),
+        "--runtime-root",
+        runtime_root,
+        "ths-export-pdf",
+        "--date",
+        trade_date,
+        "--page",
+        page,
+        "--exe-path",
+        exe_path,
+        "--printer",
+        pdf_printer,
+    ]
+    if pdf_root_dir:
+        cmd.extend(["--pdf-root-dir", pdf_root_dir])
+    if pdf_incoming_dir:
+        cmd.extend(["--incoming-dir", pdf_incoming_dir])
+    return cmd
+
+
+def run_step(
+    python_exe: str,
+    runtime_root: str,
+    action: str,
+    trade_date: str,
+    client_type: str,
+    exe_path: str,
+    pdf_root_dir: str,
+) -> dict[str, Any]:
+    cmd = build_command(python_exe, runtime_root, action, trade_date, client_type, exe_path, pdf_root_dir)
+    started_at = time.strftime("%Y-%m-%d %H:%M:%S")
+    completed = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    finished_at = time.strftime("%Y-%m-%d %H:%M:%S")
+    return {
+        "action": action,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "command": cmd,
+        "returncode": completed.returncode,
+        "stdout": completed.stdout,
+        "stderr": completed.stderr,
+    }
+
+
+def run_export_step(
+    python_exe: str,
+    runtime_root: str,
+    trade_date: str,
+    exe_path: str,
+    page: str,
+    pdf_root_dir: str,
+    pdf_printer: str,
+    pdf_incoming_dir: str,
+) -> dict[str, Any]:
+    cmd = build_export_command(
+        python_exe=python_exe,
+        runtime_root=runtime_root,
+        trade_date=trade_date,
+        exe_path=exe_path,
+        page=page,
+        pdf_root_dir=pdf_root_dir,
+        pdf_printer=pdf_printer,
+        pdf_incoming_dir=pdf_incoming_dir,
+    )
+    started_at = time.strftime("%Y-%m-%d %H:%M:%S")
+    completed = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    finished_at = time.strftime("%Y-%m-%d %H:%M:%S")
+    return {
+        "action": f"ths-export-pdf[{page}]",
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "command": cmd,
+        "returncode": completed.returncode,
+        "stdout": completed.stdout,
+        "stderr": completed.stderr,
+    }
+
+
+def summarize_files(runtime_root: Path, trade_date: str) -> dict[str, Any]:
+    date_tag = trade_date.replace("-", "")
+    snapshot_path = runtime_root / "state" / f"account_snapshot_ths_{date_tag}.json"
+    reconcile_path = runtime_root / "reports" / f"reconcile_ths_{date_tag}.json"
+    preview_path = runtime_root / "reports" / f"ths_preview_{date_tag}.json"
+
+    snapshot = load_json(snapshot_path)
+    reconcile = load_json(reconcile_path)
+    preview = load_json(preview_path)
+    pdf_root = runtime_root / "state" / "pdf_exports"
+
+    summary: dict[str, Any] = {
+        "snapshot_path": str(snapshot_path),
+        "reconcile_path": str(reconcile_path),
+        "preview_path": str(preview_path),
+        "latest_pdfs": {
+            "position": str(_latest_file(pdf_root / "position", "*.pdf") or ""),
+            "today_trades": str(_latest_file(pdf_root / "today_trades", "*.pdf") or ""),
+            "today_entrusts": str(_latest_file(pdf_root / "today_entrusts", "*.pdf") or ""),
+        },
+    }
+    if isinstance(snapshot, dict):
+        diagnostics = snapshot.get("read_diagnostics", {}) if isinstance(snapshot.get("read_diagnostics"), dict) else {}
+        summary["snapshot"] = {
+            "cash": snapshot.get("cash"),
+            "position_count": len(snapshot.get("positions", [])),
+            "entrust_count": len(snapshot.get("today_entrusts", [])),
+            "trade_count": len(snapshot.get("today_trades", [])),
+            "position_strategy": ((diagnostics.get("position") or {}).get("strategy_selected")),
+            "entrust_strategy": ((diagnostics.get("today_entrusts") or {}).get("strategy_selected")),
+            "trade_strategy": ((diagnostics.get("today_trades") or {}).get("strategy_selected")),
+        }
+    if isinstance(reconcile, dict):
+        summary["reconcile"] = {
+            "broker_cash": reconcile.get("broker_cash"),
+            "local_cash": reconcile.get("local_cash"),
+            "position_diff_count": reconcile.get("position_diff_count"),
+            "due_order_count": reconcile.get("due_order_count"),
+        }
+    if isinstance(preview, dict):
+        summary["preview"] = {
+            "order_count": len(preview.get("orders", [])),
+        }
+    return summary
+
+
+def _latest_file(folder: Path, pattern: str) -> Path | None:
+    if not folder.exists():
+        return None
+    files = sorted(folder.glob(pattern), key=lambda path: path.stat().st_mtime)
+    if not files:
+        return None
+    return files[-1]
+
+
+def append_jsonl(path: Path, row: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def print_step_result(step: dict[str, Any], summary: dict[str, Any]) -> None:
+    print(f"[{step['action']}] exit={step['returncode']}")
+    stdout = step["stdout"].strip()
+    stderr = step["stderr"].strip()
+    if stdout:
+        print(stdout)
+    if stderr:
+        print(stderr)
+    if summary.get("snapshot"):
+        snap = summary["snapshot"]
+        print(
+            f"  snapshot cash={snap['cash']} positions={snap['position_count']} "
+            f"entrusts={snap['entrust_count']} trades={snap['trade_count']}"
+        )
+        print(
+            f"  strategies position={snap['position_strategy']} "
+            f"entrust={snap['entrust_strategy']} trade={snap['trade_strategy']}"
+        )
+    if summary.get("preview"):
+        print(f"  preview orders={summary['preview']['order_count']}")
+    if summary.get("reconcile"):
+        rec = summary["reconcile"]
+        print(
+            f"  reconcile broker_cash={rec['broker_cash']} local_cash={rec['local_cash']} "
+            f"diffs={rec['position_diff_count']} due_orders={rec['due_order_count']}"
+        )
+    latest_pdfs = summary.get("latest_pdfs") or {}
+    if latest_pdfs:
+        print(
+            "  latest pdfs "
+            f"position={latest_pdfs.get('position') or 'N/A'} "
+            f"today_trades={latest_pdfs.get('today_trades') or 'N/A'}"
+        )
+
+
+def main() -> None:
+    args = parse_args()
+    runtime_root = Path(args.runtime_root)
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    (runtime_root / "logs").mkdir(parents=True, exist_ok=True)
+    log_path = runtime_root / "logs" / f"sim_check_{args.date.replace('-', '')}.jsonl"
+
+    print("=" * 72)
+    print("模拟盘稳定性巡检")
+    print(f"日期: {args.date}")
+    print(f"轮数: {args.rounds}")
+    print(f"运行目录: {runtime_root}")
+    print(f"客户端路径: {args.exe_path}")
+    print(f"日志文件: {log_path}")
+    print(f"自动导出 PDF: {'是' if args.auto_export_pdf else '否'}")
+    if args.auto_export_pdf:
+        print(f"PDF 打印机: {args.pdf_printer}")
+    print("=" * 72)
+
+    flow = []
+    if args.auto_export_pdf:
+        flow.append({"kind": "export", "name": "ths-export-pdf[position]", "page": "position"})
+    flow.extend(
+        [
+            {"kind": "action", "name": "ths-reconcile"},
+            {"kind": "action", "name": "ths-preview"},
+        ]
+    )
+    if args.auto_export_pdf:
+        flow.append({"kind": "export", "name": "ths-export-pdf[position]", "page": "position"})
+        flow.append({"kind": "export", "name": "ths-export-pdf[today_trades]", "page": "today_trades"})
+    flow.append({"kind": "action", "name": "ths-reconcile"})
+
+    all_ok = True
+    for round_idx in range(1, args.rounds + 1):
+        print(f"\n[Round {round_idx}/{args.rounds}]")
+        for step_idx, flow_step in enumerate(flow, start=1):
+            print(f"  [{step_idx}/{len(flow)}] {flow_step['name']}")
+            if flow_step["kind"] == "export":
+                step = run_export_step(
+                    python_exe=args.python_exe,
+                    runtime_root=str(runtime_root),
+                    trade_date=args.date,
+                    exe_path=args.exe_path,
+                    page=flow_step["page"],
+                    pdf_root_dir=args.pdf_root_dir,
+                    pdf_printer=args.pdf_printer,
+                    pdf_incoming_dir=args.pdf_incoming_dir,
+                )
+            else:
+                step = run_step(
+                    python_exe=args.python_exe,
+                    runtime_root=str(runtime_root),
+                    action=flow_step["name"],
+                    trade_date=args.date,
+                    client_type=args.client_type,
+                    exe_path=args.exe_path,
+                    pdf_root_dir=args.pdf_root_dir,
+                )
+            summary = summarize_files(runtime_root, args.date)
+            record = {
+                "round": round_idx,
+                "step_index": step_idx,
+                "step": flow_step["name"],
+                "result": step,
+                "summary": summary,
+            }
+            append_jsonl(log_path, record)
+            print_step_result(step, summary)
+            if step["returncode"] != 0:
+                all_ok = False
+            if step_idx < len(flow):
+                time.sleep(args.sleep_seconds)
+
+    print("\n" + "=" * 72)
+    print("巡检完成")
+    print(f"整体状态: {'SUCCESS' if all_ok else 'FAILED'}")
+    print(f"日志文件: {log_path}")
+    print("=" * 72)
+
+
+if __name__ == "__main__":
+    main()

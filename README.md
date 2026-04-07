@@ -49,12 +49,20 @@
 
 ### 交易主入口
 
+- [运行交易日常.cmd](/mnt/d/量化/同花顺/pythonProject/运行交易日常.cmd)
+  当前最推荐的 Windows 单入口
+- [运行交易日常.py](/mnt/d/量化/同花顺/pythonProject/运行交易日常.py)
+  与 `.cmd` 对应的 Python 入口
 - [交易_一键入口.py](/mnt/d/量化/同花顺/pythonProject/交易_一键入口.py)
-  推荐的人机交互入口
+  兼容入口，内部已转发到统一入口
 - [交易_半自动流程.py](/mnt/d/量化/同花顺/pythonProject/交易_半自动流程.py)
-  收盘后/盘前/复核三阶段入口
+  兼容入口，内部转发到半自动流程引擎
 - [交易_稳定性巡检.py](/mnt/d/量化/同花顺/pythonProject/交易_稳定性巡检.py)
-  模拟盘读取稳定性巡检入口
+  兼容入口，内部转发到稳定性巡检引擎
+- [entrypoints/trading](/mnt/d/量化/同花顺/pythonProject/entrypoints/trading)
+  用户入口归档目录
+- [engines/trading](/mnt/d/量化/同花顺/pythonProject/engines/trading)
+  交易执行层真实实现目录
 - [同花顺控件诊断.py](/mnt/d/量化/同花顺/pythonProject/同花顺控件诊断.py)
   交易端控件树和表格候选控件诊断入口
 - [同花顺表格抓取诊断.py](/mnt/d/量化/同花顺/pythonProject/同花顺表格抓取诊断.py)
@@ -76,9 +84,9 @@
 - [diagnostics/ths](/mnt/d/量化/同花顺/pythonProject/diagnostics/ths)
   同花顺专项诊断脚本的规范归档目录
 - [股票策略交易主流程.py](/mnt/d/量化/同花顺/pythonProject/股票策略交易主流程.py)
-  交易执行总控脚本
+  根目录兼容壳，真实实现已迁到 `engines/trading/`
 - [股票策略同花顺适配.py](/mnt/d/量化/同花顺/pythonProject/股票策略同花顺适配.py)
-  同花顺 GUI / easytrader 适配层
+  根目录兼容壳，真实实现已迁到 `engines/trading/`
 - [stock_trading](/mnt/d/量化/同花顺/pythonProject/stock_trading)
   交易状态、信号服务、纸面执行组件
 
@@ -122,24 +130,30 @@ python 策略第二阶段稳健性诊断.py
 - 用于 `easytrader / pywinauto / 同花顺客户端`
 - 推荐单独虚拟环境：`.venv-trader32`
 
+推荐以后统一从下面这个入口进入：
+
+```powershell
+.\运行交易日常.cmd
+```
+
 ## 推荐日常流程
 
 ### 1. 收盘后生成信号
 
 ```powershell
-python 交易_半自动流程.py eod --signal-date 2026-04-03
+.\运行交易日常.cmd eod 2026-04-03
 ```
 
 ### 2. 次日盘前读取账户并预览
 
 ```powershell
-python 交易_半自动流程.py preopen --trade-date 2026-04-07 --sync-cash
+.\运行交易日常.cmd preopen 2026-04-07
 ```
 
 ### 3. 人工在模拟盘执行后复核
 
 ```powershell
-python 交易_半自动流程.py postcheck --trade-date 2026-04-07 --manual-status 已成交 --manual-note "手工买入 XXX，验证成交链路"
+.\运行交易日常.cmd postcheck 2026-04-07
 ```
 
 如果人工成交后本地状态仍为空，但券商快照已经读到持仓，可以显式回填本地状态：
@@ -155,19 +169,19 @@ python 交易_半自动流程.py sync-state --trade-date 2026-04-07 --replace-ca
 ### 4. 懒人模式
 
 ```powershell
-python 交易_一键入口.py
+.\运行交易日常.cmd
 ```
 
 ### 5. 稳定性巡检
 
 ```powershell
-python 交易_稳定性巡检.py --date 2025-03-07 --rounds 3
+.\运行交易日常.cmd stability 2025-03-07
 ```
 
 如果要连同原生 PDF 自动保存一起验：
 
 ```powershell
-python 交易_稳定性巡检.py --date 2025-03-07 --rounds 3 --auto-export-pdf --pdf-printer "Microsoft Print to PDF"
+.\运行交易日常.cmd stability 2025-03-07
 ```
 
 ### 6. 控件诊断
@@ -219,11 +233,11 @@ python 股票策略交易主流程.py ths-export-pdf --date 2025-03-07 --page to
 半自动流程可在对账前先自动导出 PDF：
 
 ```powershell
-python 交易_半自动流程.py preopen --trade-date 2025-03-07 --auto-export-pdf --sync-cash
+.\运行交易日常.cmd preopen 2025-03-07
 ```
 
 ```powershell
-python 交易_半自动流程.py postcheck --trade-date 2025-03-07 --auto-export-pdf --manual-status 已成交
+.\运行交易日常.cmd postcheck 2025-03-07
 ```
 
 ## 当前已知问题
